@@ -11,12 +11,7 @@ from tkinter import ttk, filedialog, messagebox, simpledialog, font as tkfont
 from generator import base_dir, generate
 from learn import Knowledge, import_folder, split_materials
 
-if "__compiled__" in globals():                     # собрано Nuitka: папка, где лежит akt.exe
-    APP_DIR = Path(sys.argv[0]).resolve().parent
-elif getattr(sys, "frozen", False):
-    APP_DIR = Path(sys.executable).parent
-else:
-    APP_DIR = Path(__file__).parent
+APP_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
 # Данные — в скрытой папке .data рядом с программой: не видно, переносится вместе с .exe
 DATA_DIR = APP_DIR / ".data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -28,16 +23,14 @@ SIGN_FILE = DATA_DIR / "signers.json"
 LAST_FILE = DATA_DIR / "last_project.json"
 KNOW_FILE = DATA_DIR / "knowledge.json"          # акты, которые программа изучила у пользователя
 
-# данные прежних версий (рядом с программой или в %APPDATA%\AktsPTO) переносятся в .data
-_OLD_DIRS = [APP_DIR, Path(os.environ.get("APPDATA") or Path.home()) / "AktsPTO"]
+# файлы прежних версий, лежавшие рядом с программой, переносятся в .data
 for _f in (MAT_FILE, SIGN_FILE, LAST_FILE, KNOW_FILE):
-    for _d in _OLD_DIRS:
-        _old = _d / _f.name
-        if _old.exists() and not _f.exists():
-            try:
-                shutil.move(str(_old), str(_f))
-            except OSError:
-                pass
+    _old = APP_DIR / _f.name
+    if _old.exists() and not _f.exists():
+        try:
+            shutil.move(str(_old), str(_f))
+        except OSError:
+            pass
 
 ROLES = ["Заказчика", "Подрядчика", "Технического надзора", "Авторского надзора",
          "Генподрядной организации", "Субподрядчика"]

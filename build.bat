@@ -1,6 +1,6 @@
 @echo off
 rem Сборка akt.exe. Нужен установленный Python 3.10+ (python.org, галочка "Add to PATH")
-pip install python-docx nuitka
-python -m nuitka --onefile --assume-yes-for-downloads --windows-console-mode=disable --enable-plugin=tk-inter --windows-icon-from-ico=akt.ico --include-package-data=docx --include-data-files=template.docx=template.docx --include-data-files=akt.ico=akt.ico --output-dir=dist --output-filename=akt.exe app.py
-echo Готово: dist\akt.exe
+pip install python-docx pyinstaller
+pyinstaller --noconsole --onefile --name akt --icon akt.ico --add-data "template.docx;." --add-data "akt.ico;." app.py
+echo Готово: папка dist (akt.exe)
 pause
