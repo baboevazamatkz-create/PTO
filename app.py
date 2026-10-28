@@ -16,8 +16,9 @@ LAST_FILE = APP_DIR / "last_project.json"
 ROLES = ["Заказчика", "подрядчика", "технического надзора", "авторского надзора",
          "Генподрядной организации", "субподрядчика"]
 
-BG, CARD, FIELD, LINE = "#FFFFFF", "#FFFFFF", "#F4F5F7", "#E3E6EA"
-TEXT, MUTED, ACCENT, ACCENT_D = "#1F2933", "#7B8794", "#2F6FEB", "#2459C4"
+BG, FIELD, LINE, SOFT = "#F3F6FB", "#FFFFFF", "#D5DCE8", "#E4EAF6"
+TEXT, MUTED, ACCENT, ACCENT_D = "#1F2933", "#6B7A90", "#3B5BDB", "#2F4AC0"
+HEAD, HEAD_BTN, OK = "#26345E", "#3A4B80", "#2F9E44"
 
 DEFAULT = {
     "act_no": "", "works": "", "docs": "", "materials_sel": [],
@@ -56,23 +57,40 @@ def fmt_date(v):
 
 
 def date_entry(parent, var, **kw):
-    """Поле даты: вводятся только цифры, точки расставляются сами."""
-    busy = []
-
-    def on_write(*_):
-        if busy:
+    """Поле даты: вводятся только цифры, точки расставляются сами, курсор не прыгает."""
+    def fix():
+        raw = var.get()
+        new = fmt_date(raw)
+        if new == raw:
             return
-        new = fmt_date(var.get())
-        if new != var.get():
-            busy.append(1)
-            var.set(new)
-            busy.pop()
-        e.icursor("end")
+        n = len(re.sub(r"\D", "", raw[:e.index("insert")]))     # цифр слева от курсора
+        var.set(new)
+        pos, seen = 0, 0
+        while pos < len(new) and seen < n:
+            seen += new[pos].isdigit()
+            pos += 1
+        e.icursor(pos)
 
     e = ttk.Entry(parent, textvariable=var, **kw)
-    var.trace_add("write", on_write)
-    on_write()
+    var.trace_add("write", lambda *_: e.after_idle(fix))
+    var.set(fmt_date(var.get()))
     return e
+
+
+def cap(s):
+    """Первая буква — заглавная."""
+    s = s.strip()
+    return s[:1].upper() + s[1:]
+
+
+def auto_cap(t):
+    """Text: первая буква автоматически заглавная."""
+    def on_key(_):
+        ch = t.get("1.0")
+        if ch.islower():
+            t.delete("1.0")
+            t.insert("1.0", ch.upper())
+    t.bind("<KeyRelease>", on_key, add="+")
 
 
 def install_clipboard(root):
@@ -118,42 +136,48 @@ def install_clipboard(root):
 def setup_style(root):
     fam = "Segoe UI" if "Segoe UI" in tkfont.families() else "DejaVu Sans"
     for name in ("TkDefaultFont", "TkTextFont", "TkMenuFont", "TkHeadingFont"):
-        tkfont.nametofont(name).configure(family=fam, size=10)
-    root.option_add("*Font", (fam, 10))
+        tkfont.nametofont(name).configure(family=fam, size=9)
+    root.option_add("*Font", (fam, 9))
     root.configure(bg=BG)
     s = ttk.Style(root)
     s.theme_use("clam")
-    s.configure(".", background=BG, foreground=TEXT, font=(fam, 10), borderwidth=0)
+    s.configure(".", background=BG, foreground=TEXT, font=(fam, 9), borderwidth=0)
     s.configure("TFrame", background=BG)
     s.configure("TLabel", background=BG, foreground=TEXT)
     s.configure("Muted.TLabel", foreground=MUTED, font=(fam, 9))
-    s.configure("H.TLabel", font=(fam, 9, "bold"), foreground=MUTED)
+    s.configure("H.TLabel", font=(fam, 8, "bold"), foreground=ACCENT)
     s.title_font = tkfont.Font(family=fam, size=15, weight="bold")
     s.configure("Title.TLabel", font=s.title_font)
     s.configure("TEntry", fieldbackground=FIELD, bordercolor=LINE, lightcolor=LINE,
-                darkcolor=LINE, padding=6, relief="flat")
+                darkcolor=LINE, padding=4, relief="flat")
     s.map("TEntry", bordercolor=[("focus", ACCENT)], lightcolor=[("focus", ACCENT)],
           darkcolor=[("focus", ACCENT)])
     s.configure("TCombobox", fieldbackground=FIELD, background=FIELD, bordercolor=LINE,
-                lightcolor=LINE, darkcolor=LINE, padding=6, arrowcolor=MUTED)
-    s.map("TCombobox", bordercolor=[("focus", ACCENT)], fieldbackground=[("readonly", FIELD)])
+                lightcolor=LINE, darkcolor=LINE, padding=4, arrowcolor=MUTED)
+    s.map("TCombobox", bordercolor=[("focus", ACCENT)], fieldbackground=[("readonly", FIELD)],
+          selectbackground=[("readonly", FIELD)], selectforeground=[("readonly", TEXT)])
     s.configure("TCheckbutton", background=BG, focuscolor=BG)
     s.map("TCheckbutton", background=[("active", BG)])
-    s.configure("TButton", background=FIELD, foreground=TEXT, padding=(12, 7), relief="flat",
-                focuscolor=FIELD)
+    s.configure("TButton", background=SOFT, foreground=TEXT, padding=(10, 5), relief="flat",
+                focuscolor=SOFT)
     s.map("TButton", background=[("active", LINE)])
-    s.configure("Accent.TButton", background=ACCENT, foreground="#FFFFFF", padding=(18, 9),
-                font=(fam, 10, "bold"))
+    s.configure("Head.TButton", background=HEAD_BTN, foreground="#FFFFFF", padding=(10, 5),
+                focuscolor=HEAD_BTN)
+    s.map("Head.TButton", background=[("active", ACCENT)])
+    s.configure("Accent.TButton", background=ACCENT, foreground="#FFFFFF", padding=(16, 7),
+                font=(fam, 9, "bold"))
     s.map("Accent.TButton", background=[("active", ACCENT_D)])
+    s.configure("Ok.TButton", background=OK, foreground="#FFFFFF", padding=(16, 7), font=(fam, 9, "bold"))
+    s.map("Ok.TButton", background=[("active", "#2B8A3E")])
     s.configure("Link.TButton", background=BG, foreground=ACCENT, padding=(4, 6))
     s.map("Link.TButton", background=[("active", BG)], foreground=[("active", ACCENT_D)])
     s.configure("Icon.TButton", background=BG, foreground=MUTED, padding=(5, 3))
-    s.map("Icon.TButton", background=[("active", FIELD)], foreground=[("active", TEXT)])
-    s.configure("Treeview", background=BG, fieldbackground=BG, rowheight=30, bordercolor=LINE,
+    s.map("Icon.TButton", background=[("active", SOFT)], foreground=[("active", TEXT)])
+    s.configure("Treeview", background=FIELD, fieldbackground=FIELD, rowheight=26, bordercolor=LINE,
                 borderwidth=0)
-    s.configure("Treeview.Heading", background=BG, foreground=MUTED, font=(fam, 9, "bold"),
+    s.configure("Treeview.Heading", background=FIELD, foreground=MUTED, font=(fam, 9, "bold"),
                 relief="flat")
-    s.map("Treeview", background=[("selected", "#E8F0FE")], foreground=[("selected", TEXT)])
+    s.map("Treeview", background=[("selected", SOFT)], foreground=[("selected", TEXT)])
     s.configure("Vertical.TScrollbar", background=LINE, troughcolor=BG, bordercolor=BG,
                 arrowsize=0, relief="flat")
     return fam
@@ -161,9 +185,10 @@ def setup_style(root):
 
 def text_field(parent, height, value=""):
     t = tk.Text(parent, height=height, wrap="word", relief="flat", bg=FIELD, fg=TEXT,
-                insertbackground=TEXT, padx=8, pady=6, highlightthickness=1,
+                insertbackground=TEXT, padx=6, pady=4, highlightthickness=1,
                 highlightbackground=LINE, highlightcolor=ACCENT, undo=True)
     t.insert("1.0", value)
+    auto_cap(t)
     return t
 
 
@@ -401,7 +426,7 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Акты скрытых работ")
-        self.geometry("920x780")
+        self.geometry("860x680")
         self.minsize(760, 560)
         setup_style(self)
         install_clipboard(self)
@@ -418,18 +443,18 @@ class App(tk.Tk):
 
     # ---------- построение окна
     def build(self, data):
-        head = ttk.Frame(self, padding=(24, 18, 24, 8))
+        head = tk.Frame(self, bg=HEAD, padx=20, pady=10)
         head.pack(fill="x")
-        tk.Label(head, text="Акт освидетельствования скрытых работ", bg=BG, fg=TEXT,
-                 font=("Segoe UI", 15, "bold")).pack(side="left")
-        ttk.Button(head, text="Сохранить", command=self.save_project).pack(side="right")
-        ttk.Button(head, text="Подписанты", command=lambda: SignersDialog(self)).pack(side="right", padx=(0, 6))
-        ttk.Button(head, text="Открыть", command=self.open_project).pack(side="right", padx=6)
+        tk.Label(head, text="Акт освидетельствования скрытых работ", bg=HEAD, fg="#FFFFFF",
+                 font=("Segoe UI", 13, "bold")).pack(side="left")
+        for t, c in (("Сохранить", self.save_project), ("Открыть", self.open_project),
+                     ("Подписанты", lambda: SignersDialog(self))):
+            ttk.Button(head, text=t, style="Head.TButton", command=c).pack(side="right", padx=(6, 0))
 
-        foot = ttk.Frame(self, padding=(24, 10, 24, 16))
+        foot = ttk.Frame(self, padding=(20, 8, 20, 10))
         foot.pack(side="bottom", fill="x")
-        ttk.Frame(self, height=1, style="TFrame").pack(side="bottom", fill="x")
-        ttk.Button(foot, text="Сформировать акт (Word)", style="Accent.TButton",
+        tk.Frame(self, height=1, bg=LINE).pack(side="bottom", fill="x")
+        ttk.Button(foot, text="Сформировать акт (Word)", style="Ok.TButton",
                    command=self.make).pack(side="right")
 
         wrap = ttk.Frame(self)
@@ -439,7 +464,7 @@ class App(tk.Tk):
         cv.configure(yscrollcommand=sb.set)
         sb.pack(side="right", fill="y")
         cv.pack(side="left", fill="both", expand=True)
-        body = ttk.Frame(cv, padding=(24, 4, 24, 16))
+        body = ttk.Frame(cv, padding=(20, 0, 20, 10))
         win = cv.create_window((0, 0), window=body, anchor="nw")
         body.bind("<Configure>", lambda e: cv.configure(scrollregion=cv.bbox("all")))
         cv.bind("<Configure>", lambda e: cv.itemconfigure(win, width=e.width))
@@ -452,7 +477,7 @@ class App(tk.Tk):
         def section(title):
             nonlocal r
             ttk.Label(body, text=title.upper(), style="H.TLabel").grid(
-                row=r, column=0, sticky="w", pady=(18, 6))
+                row=r, column=0, sticky="w", pady=(10, 3))
             r += 1
 
         # 1. номер акта
@@ -467,25 +492,25 @@ class App(tk.Tk):
         self.reps_frame.grid(row=r, column=0, sticky="ew")
         r += 1
         ttk.Button(body, text="＋ Добавить представителя", style="Link.TButton",
-                   command=self.rep_add).grid(row=r, column=0, sticky="w", pady=(4, 0))
+                   command=self.rep_add).grid(row=r, column=0, sticky="w", pady=(2, 0))
         r += 1
         self.rep_draw()
 
         # 3. работы
         section("К освидетельствованию предъявлены работы")
-        self.works = text_field(body, 3, data["works"])
+        self.works = text_field(body, 2, data["works"])
         self.works.grid(row=r, column=0, sticky="ew")
         r += 1
 
         section("Работы выполнены по проектной документации")
-        self.docs = text_field(body, 3, data["docs"])
+        self.docs = text_field(body, 2, data["docs"])
         self.docs.grid(row=r, column=0, sticky="ew")
         r += 1
 
         # 4. материалы
         section("При выполнении работ применены")
-        self.mat_box = tk.Text(body, height=3, wrap="word", relief="flat", bg=FIELD, fg=TEXT,
-                               padx=8, pady=6, cursor="hand2", highlightthickness=1,
+        self.mat_box = tk.Text(body, height=2, wrap="word", relief="flat", bg=FIELD, fg=TEXT,
+                               padx=6, pady=4, cursor="hand2", highlightthickness=1,
                                highlightbackground=LINE, state="disabled")
         self.mat_box.grid(row=r, column=0, sticky="ew")
         self.mat_box.bind("<Button-1>", lambda e: self.open_materials())
@@ -506,7 +531,7 @@ class App(tk.Tk):
 
         # 6. последующие работы
         section("Разрешается производство последующих работ")
-        self.next_works = text_field(body, 2, data["next_works"])
+        self.next_works = text_field(body, 1, data["next_works"])
         self.next_works.grid(row=r, column=0, sticky="ew")
 
     # ---------- представители
@@ -523,10 +548,10 @@ class App(tk.Tk):
             row = {"on": tk.BooleanVar(value=rep.get("on", True)), "rep": dict(rep),
                    "var": tk.StringVar(value=rep_label(rep) if rep.get("role") else "")}
             self.rows.append(row)
-            ttk.Checkbutton(f, variable=row["on"]).grid(row=i, column=0, padx=(0, 6), pady=3)
+            ttk.Checkbutton(f, variable=row["on"]).grid(row=i, column=0, padx=(0, 6), pady=2)
             cb = ttk.Combobox(f, textvariable=row["var"], values=self.signer_labels(),
                               state="readonly")
-            cb.grid(row=i, column=1, sticky="ew", pady=3)
+            cb.grid(row=i, column=1, sticky="ew", pady=2)
             cb.bind("<<ComboboxSelected>>", lambda e, row=row: self.rep_pick(row))
             row["cb"] = cb
             ttk.Button(f, text="↑", width=2, style="Icon.TButton",
@@ -578,7 +603,7 @@ class App(tk.Tk):
         names = [m["name"] for m in self.mats if m["name"] in self.chosen]
         text = "\n".join("• " + n for n in names) if names else "Нажмите, чтобы выбрать материалы…"
         self.mat_box.configure(state="normal", fg=TEXT if names else MUTED,
-                               height=max(3, min(8, len(names) + 1)))
+                               height=max(2, min(6, len(names))))
         self.mat_box.delete("1.0", "end")
         self.mat_box.insert("1.0", text)
         self.mat_box.configure(state="disabled")
@@ -589,7 +614,7 @@ class App(tk.Tk):
     # ---------- данные
     def collect(self):
         self.rep_read()
-        g = lambda t: t.get("1.0", "end").strip()
+        g = lambda t: cap(t.get("1.0", "end"))
         return {"act_no": self.act_no.get().strip(), "works": g(self.works), "docs": g(self.docs),
                 "materials_sel": [m["name"] for m in self.mats if m["name"] in self.chosen],
                 "start": self.start.get().strip(), "end": self.end.get().strip(),

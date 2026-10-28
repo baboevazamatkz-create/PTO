@@ -49,7 +49,7 @@ def set_runs(p, parts):
         r = p.add_run(text)
         r.bold = True if f.get("b") else None
         r.italic = True if f.get("i") else None
-        r.underline = True if f.get("u") else None
+        r.underline = f["u"] if "u" in f else None
 
 
 def text_width(doc):
@@ -64,6 +64,31 @@ def add_tab(p, pos, align, leader=WD_TAB_LEADER.SPACES):
 def right_tab(p, width):
     p.paragraph_format.tab_stops.clear_all()
     p.paragraph_format.tab_stops.add_tab_stop(width, WD_TAB_ALIGNMENT.RIGHT)
+
+
+def to_edge(p, width):
+    """Подчёркивание значения тянется табуляцией до правого поля."""
+    p.paragraph_format.tab_stops.clear_all()
+    add_tab(p, width, WD_TAB_ALIGNMENT.RIGHT)
+    r = p.add_run("\t")
+    r.underline = True
+
+
+def bottom_line(p):
+    """Линия на всю ширину — нижняя граница абзаца."""
+    bdr = OxmlElement("w:pBdr")
+    bottom = OxmlElement("w:bottom")
+    for k, v in (("val", "single"), ("sz", "4"), ("space", "1"), ("color", "auto")):
+        bottom.set(qn("w:" + k), v)
+    bdr.append(bottom)
+    pPr = p._p.get_or_add_pPr()
+    before = {qn("w:" + t) for t in ("pStyle", "keepNext", "keepLines", "pageBreakBefore",
+                                     "framePr", "widowControl", "numPr", "suppressLineNumbers")}
+    for i, ch in enumerate(pPr):                 # pBdr должен стоять на своём месте по схеме
+        if ch.tag not in before:
+            pPr.insert(i, bdr)
+            return
+    pPr.append(bdr)
 
 
 def is_caption(p):
@@ -98,6 +123,8 @@ def generate(data, out_path, template=None):
     doc = Document(str(template or base_dir() / "template.docx"))
     P = lambda prefix, start=0: doc.paragraphs[find(doc, prefix, start)]
     IU = {"i": True, "u": True}      # заполняемое значение: курсив + подчёркивание
+    W = text_width(doc)
+    edge = []                        # абзацы, где подчёркивание тянется до правого поля
 
     # --- строка «город … дата» (поля остаются как в шаблоне, выравнивание — по табуляции)
     p = doc.paragraphs[find(doc, "г. ")]
@@ -112,9 +139,12 @@ def generate(data, out_path, template=None):
     p = P("Объект:")
     label, _, value = p.text.partition(": ")
     set_runs(p, [(label + ": ", {}), (value, IU)])
+    p.alignment = 3                  # по ширине
+    edge.append(p)
     p = P("произвели осмотр")
     label, _, value = p.text.partition(": ")
     set_runs(p, [(label + ": ", {"b": True}), (value.strip(), IU)])
+    edge.append(p)
 
     # --- представители (верх)
     reps = [r for r in data["reps"] if r.get("on", True)]
@@ -134,23 +164,28 @@ def generate(data, out_path, template=None):
             if kind == "line":
                 who = " ".join(x for x in (r["org"], r["position"], r["name"]) if x)
                 set_runs(anchor, [(f'Представитель {r["role"]}: ', {"b": True}), (who, IU)])
+                edge.append(anchor)
             else:
                 set_runs(anchor, [("(организация, должность, фамилия, инициалы)", {})])
 
     # --- работы, документация
-    set_runs(P("К освидетельствованию"),
-             [("К освидетельствованию предъявлены работы: ", {}), (data["works"], IU)])
-    set_runs(P("Работы выполнены по"),
-             [("Работы выполнены по проектной документации: ", {}), (data["docs"], IU)])
+    p = P("К освидетельствованию")
+    set_runs(p, [("К освидетельствованию предъявлены работы: ", {}), (data["works"], IU)])
+    edge.append(p)
+    p = P("Работы выполнены по")
+    set_runs(p, [("Работы выполнены по проектной документации: ", {}), (data["docs"], IU)])
+    edge.append(p)
 
     # --- материалы
-    set_runs(P("3. При выполнении"),
-             [("3. При выполнении работ применены: ", {}), (" ".join(data["materials"]), IU)])
+    p = P("3. При выполнении")
+    set_runs(p, [("3. При выполнении работ применены: ", {}), (" ".join(data["materials"]), IU)])
+    edge.append(p)
 
     # --- отклонения (значение подчёркивается)
     i = find(doc, "4. При выполнении")
     p = doc.paragraphs[i + 1]
-    set_runs(p, [(p.text.strip(), IU)])
+    set_runs(p, [(p.text.strip(), {"i": True, "u": False})])
+    dev_p = p
 
     # --- даты
     i = find(doc, "Даты:")
@@ -163,8 +198,8 @@ def generate(data, out_path, template=None):
     if numPr is not None:                       # автонумерация давала «1.» — пункт должен быть 5
         ps[i]._p.pPr.remove(numPr)
     pf.left_indent, pf.first_line_indent = num_ref.left_indent, num_ref.first_line_indent
-    set_runs(ps[i], [("5. Даты: начала работ  ", {}), (f"«{d1}» {m1} {y1}г.", IU)])
-    set_runs(ps[i + 1], [("\t                окончание работ ", {}), (f"«{d2}» {m2} {y2}г.", IU)])
+    set_runs(ps[i], [("5. Даты: начала работ  ", {}), (f"«{d1}» {m1} {y1}г.", {"i": True})])
+    set_runs(ps[i + 1], [("\t                окончание работ ", {}), (f"«{d2}» {m2} {y2}г.", {"i": True})])
 
     # --- последующие работы
     i = find(doc, "На основании изложенного")
@@ -172,7 +207,7 @@ def generate(data, out_path, template=None):
     set_runs(ps[i], [("На основании изложенного разрешается производство последующих работ "
                       "по устройству (монтажу)", {})])
     set_runs(ps[i + 1], [(data["next_works"], {"i": True})])
-    next_idx = i + 1                      # линия на всю ширину поля — рамкой абзаца (ниже)
+    next_p = ps[i + 1]
 
     # --- подписи (низ)
     s = find(doc, "Представитель", i + 1)
@@ -182,7 +217,6 @@ def generate(data, out_path, template=None):
     proto_sigcap = copy.deepcopy(ps[s + 1]._p)
     for el in [ps[k]._p for k in range(s, len(ps) - 1)]:
         el.getparent().remove(el)
-    W = text_width(doc)
     S0, S1 = W * 0.47, W * 0.72                  # начало и конец линии подписи
     C1, C2 = (S0 + S1) / 2, (S1 + W) / 2         # центры подстрочников
     anchor = None
@@ -210,8 +244,8 @@ def generate(data, out_path, template=None):
             parts = [(label, {})]
         add_tab(p, S0, WD_TAB_ALIGNMENT.LEFT)
         add_tab(p, S1, WD_TAB_ALIGNMENT.LEFT, WD_TAB_LEADER.LINES)
-        add_tab(p, W, WD_TAB_ALIGNMENT.RIGHT, WD_TAB_LEADER.LINES)
-        set_runs(p, parts + [("\t\t/ ", {}), (r["name"], {"u": True}), ("\t", {"u": True})])
+        add_tab(p, C2, WD_TAB_ALIGNMENT.CENTER)
+        set_runs(p, parts + [("\t\t/\t", {}), (r["name"], {"u": True})])
         p = new_par(proto_sigcap)
         add_tab(p, C1, WD_TAB_ALIGNMENT.CENTER)
         add_tab(p, C2, WD_TAB_ALIGNMENT.CENTER)
@@ -219,11 +253,9 @@ def generate(data, out_path, template=None):
         set_runs(new_par(proto_sigcap), [("", {})])
 
     apply_fonts(doc)
-    p = doc.paragraphs[next_idx]
-    bdr = OxmlElement("w:pBdr")
-    bottom = OxmlElement("w:bottom")
-    for k, v in (("val", "single"), ("sz", "4"), ("space", "1"), ("color", "auto")):
-        bottom.set(qn("w:" + k), v)
-    bdr.append(bottom)
-    p._p.get_or_add_pPr().append(bdr)
+    for p in edge:
+        to_edge(p, W)
+    dev_p.paragraph_format.space_after = Pt(0)
+    bottom_line(dev_p)
+    bottom_line(next_p)
     doc.save(str(out_path))
