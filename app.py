@@ -13,8 +13,8 @@ MAT_FILE = APP_DIR / "materials.json"
 SIGN_FILE = APP_DIR / "signers.json"
 LAST_FILE = APP_DIR / "last_project.json"
 
-ROLES = ["Заказчика", "подрядчика", "технического надзора", "авторского надзора",
-         "Генподрядной организации", "субподрядчика"]
+ROLES = ["Заказчика", "Подрядчика", "Технического надзора", "Авторского надзора",
+         "Генподрядной организации", "Субподрядчика"]
 
 BG, FIELD, LINE, SOFT = "#F3F6FB", "#FFFFFF", "#D5DCE8", "#E4EAF6"
 TEXT, MUTED, ACCENT, ACCENT_D = "#1F2933", "#6B7A90", "#3B5BDB", "#2F4AC0"
@@ -336,6 +336,8 @@ class SignerForm(tk.Toplevel):
             w = (ttk.Combobox(f, textvariable=self.v[k], values=ROLES, width=44) if k == "role"
                  else ttk.Entry(f, textvariable=self.v[k], width=46))
             w.grid(row=2 * i + 1, column=0, sticky="ew", pady=(0, 10))
+            self.v[k].trace_add("write", lambda *_, var=self.v[k]: (
+                var.get()[:1].islower() and var.set(var.get()[:1].upper() + var.get()[1:])))
         bar = ttk.Frame(f)
         bar.grid(row=8, column=0, sticky="e", pady=(6, 0))
         ttk.Button(bar, text="Отмена", command=self.destroy).pack(side="left", padx=6)
@@ -344,7 +346,7 @@ class SignerForm(tk.Toplevel):
         self.wait_window()
 
     def ok(self):
-        self.result = {k: v.get().strip() for k, v in self.v.items()}
+        self.result = {k: cap(v.get()) for k, v in self.v.items()}
         if not self.result["name"] and not self.result["org"]:
             messagebox.showwarning("Подписант", "Укажите хотя бы Ф.И.О. или организацию.", parent=self)
             return
@@ -431,7 +433,7 @@ class App(tk.Tk):
         setup_style(self)
         install_clipboard(self)
         self.mats = load_json(MAT_FILE, [])
-        self.signers = load_json(SIGN_FILE, DEFAULT_SIGNERS)
+        self.signers = [{k: cap(v) for k, v in r.items()} for r in load_json(SIGN_FILE, DEFAULT_SIGNERS)]
         data = {**DEFAULT, **load_json(LAST_FILE, {})}
         if not data["reps"]:
             data["reps"] = [{"on": True, "role": "", "org": "", "position": "", "name": ""}]

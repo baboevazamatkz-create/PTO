@@ -7,11 +7,12 @@ from docx import Document
 from docx.enum.text import WD_TAB_ALIGNMENT, WD_TAB_LEADER
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-from docx.shared import Pt
+from docx.shared import Cm, Pt
 from docx.text.paragraph import Paragraph
 
 FONT = "Times New Roman"
 SIZE, SMALL = Pt(10), Pt(8)
+ITEM_INDENT = Cm(0.6)          # отступ текста пунктов 1–5 от номера
 
 MONTHS = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля",
           "августа", "сентября", "октября", "ноября", "декабря"]
@@ -131,6 +132,7 @@ def generate(data, out_path, template=None):
     set_runs(p, [(re.sub(r"\s{3,}", "\t", p.text.strip()), {})])
     p.alignment = 0
     right_tab(p, text_width(doc))
+    p.paragraph_format.space_after = Pt(8)       # отступ перед «Объект»
 
     # --- номер акта
     set_runs(P("АКТ"), [("АКТ № ", {"b": True}), (data["act_no"], {"b": True})])
@@ -168,21 +170,31 @@ def generate(data, out_path, template=None):
             else:
                 set_runs(anchor, [("(организация, должность, фамилия, инициалы)", {})])
 
-    # --- работы, документация
+    # --- пункты 1–5: одинаковый номер, табуляция и висячий отступ
+    def item(p, n, parts):
+        pPr = p._p.get_or_add_pPr()
+        numPr = pPr.find(qn("w:numPr"))
+        if numPr is not None:                    # автонумерация шаблона — заменяем ручной
+            pPr.remove(numPr)
+        pf = p.paragraph_format
+        pf.tab_stops.clear_all()
+        pf.left_indent, pf.first_line_indent = ITEM_INDENT, -ITEM_INDENT
+        set_runs(p, [(f"{n}.\t", {})] + parts)
+
     p = P("К освидетельствованию")
-    set_runs(p, [("К освидетельствованию предъявлены работы: ", {}), (data["works"], IU)])
+    item(p, 1, [("К освидетельствованию предъявлены работы: ", {}), (data["works"], IU)])
     edge.append(p)
     p = P("Работы выполнены по")
-    set_runs(p, [("Работы выполнены по проектной документации: ", {}), (data["docs"], IU)])
+    item(p, 2, [("Работы выполнены по проектной документации: ", {}), (data["docs"], IU)])
     edge.append(p)
-
-    # --- материалы
     p = P("3. При выполнении")
-    set_runs(p, [("3. При выполнении работ применены: ", {}), (" ".join(data["materials"]), IU)])
+    item(p, 3, [("При выполнении работ применены: ", {}), (" ".join(data["materials"]), IU)])
     edge.append(p)
 
-    # --- отклонения (значение подчёркивается)
+    # --- отклонения (значение — на линии во всю ширину)
     i = find(doc, "4. При выполнении")
+    p = doc.paragraphs[i]
+    item(p, 4, [(p.text.strip()[2:].strip(), {})])
     p = doc.paragraphs[i + 1]
     set_runs(p, [(p.text.strip(), {"i": True, "u": False})])
     dev_p = p
@@ -192,14 +204,13 @@ def generate(data, out_path, template=None):
     d1, m1, y1 = split_date(data["start"])
     d2, m2, y2 = split_date(data["end"])
     ps = doc.paragraphs
-    num_ref = ps[find(doc, "3. При выполнении")].paragraph_format
-    pf = ps[i].paragraph_format
-    numPr = ps[i]._p.pPr.find(qn("w:numPr"))
-    if numPr is not None:                       # автонумерация давала «1.» — пункт должен быть 5
-        ps[i]._p.pPr.remove(numPr)
-    pf.left_indent, pf.first_line_indent = num_ref.left_indent, num_ref.first_line_indent
-    set_runs(ps[i], [("5. Даты: начала работ  ", {}), (f"«{d1}» {m1} {y1}г.", {"i": True})])
-    set_runs(ps[i + 1], [("\t                окончание работ ", {}), (f"«{d2}» {m2} {y2}г.", {"i": True})])
+    item(ps[i], 5, [("Даты: начала работ ", {}), (f"«{d1}» {m1} {y1}г.", {"i": True})])
+    p2 = ps[i + 1]
+    p2.paragraph_format.tab_stops.clear_all()
+    p2.paragraph_format.left_indent = ITEM_INDENT + Cm(1.0)    # под «начала работ»
+    p2.paragraph_format.first_line_indent = 0
+    p2.paragraph_format.space_after = Pt(10)     # отступ перед «Решение комиссии»
+    set_runs(p2, [("окончание работ ", {}), (f"«{d2}» {m2} {y2}г.", {"i": True})])
 
     # --- последующие работы
     i = find(doc, "На основании изложенного")
@@ -217,7 +228,7 @@ def generate(data, out_path, template=None):
     proto_sigcap = copy.deepcopy(ps[s + 1]._p)
     for el in [ps[k]._p for k in range(s, len(ps) - 1)]:
         el.getparent().remove(el)
-    S0, S1 = W * 0.47, W * 0.72                  # начало и конец линии подписи
+    S0, S1 = W * 0.55, W * 0.71                  # начало и конец линии подписи
     C1, C2 = (S0 + S1) / 2, (S1 + W) / 2         # центры подстрочников
     anchor = None
 
@@ -235,7 +246,7 @@ def generate(data, out_path, template=None):
 
     for r in reps:
         label = f'Представитель {r["role"]}' + (f' {r["org"]}' if r["org"] else "")
-        if len(label) > 46:                       # длинная подпись — отдельной строкой
+        if len(label) > 54:                       # длинная подпись — отдельной строкой
             set_runs(new_par(proto_sig), [(label, {})])
             p = new_par(proto_sig)
             parts = []
@@ -245,7 +256,9 @@ def generate(data, out_path, template=None):
         add_tab(p, S0, WD_TAB_ALIGNMENT.LEFT)
         add_tab(p, S1, WD_TAB_ALIGNMENT.LEFT, WD_TAB_LEADER.LINES)
         add_tab(p, C2, WD_TAB_ALIGNMENT.CENTER)
-        set_runs(p, parts + [("\t\t/\t", {}), (r["name"], {"u": True})])
+        add_tab(p, W, WD_TAB_ALIGNMENT.RIGHT)
+        U = {"u": True}                           # поле расшифровки подчёркнуто целиком
+        set_runs(p, parts + [("\t\t/", {}), ("\t", U), (r["name"], U), ("\t", U)])
         p = new_par(proto_sigcap)
         add_tab(p, C1, WD_TAB_ALIGNMENT.CENTER)
         add_tab(p, C2, WD_TAB_ALIGNMENT.CENTER)
