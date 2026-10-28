@@ -188,9 +188,55 @@ def setup_style(root):
     s.configure("Treeview.Heading", background=FIELD, foreground=MUTED, font=(fam, 9, "bold"),
                 relief="flat")
     s.map("Treeview", background=[("selected", SOFT)], foreground=[("selected", TEXT)])
-    s.configure("Vertical.TScrollbar", background=LINE, troughcolor=BG, bordercolor=BG,
-                arrowsize=0, relief="flat")
+    s.configure("Vertical.TScrollbar", background="#B8C3D6", troughcolor=BG, bordercolor=BG,
+                lightcolor="#B8C3D6", darkcolor="#B8C3D6", arrowsize=12, relief="flat",
+                arrowcolor=MUTED)
+    s.map("Vertical.TScrollbar", background=[("active", ACCENT)])
     return fam
+
+
+SCROLLERS = {}        # путь виджета -> Canvas, который он прокручивает
+
+
+def scrollable(parent, bg):
+    """Canvas с вертикальной прокруткой; возвращает (внешняя рамка, внутренняя рамка, canvas)."""
+    outer = tk.Frame(parent, bg=bg)
+    cv = tk.Canvas(outer, bg=bg, highlightthickness=0)
+    sb = ttk.Scrollbar(outer, orient="vertical", command=cv.yview)
+    cv.configure(yscrollcommand=sb.set)
+    sb.pack(side="right", fill="y")
+    cv.pack(side="left", fill="both", expand=True)
+    inner = tk.Frame(cv, bg=bg)
+    win = cv.create_window((0, 0), window=inner, anchor="nw")
+    inner.bind("<Configure>", lambda e: cv.configure(scrollregion=cv.bbox("all")))
+    cv.bind("<Configure>", lambda e: cv.itemconfigure(win, width=e.width))
+    SCROLLERS[str(outer)] = cv
+    return outer, inner, cv
+
+
+def install_wheel(root):
+    """Колесо мыши прокручивает ту область, над которой находится курсор."""
+    def on_wheel(e, step=None):
+        w = root.winfo_containing(e.x_root, e.y_root)
+        if w is None:
+            return
+        path = str(w)
+        best = max((p for p in SCROLLERS if path.startswith(p)), key=len, default=None)
+        if not best:
+            return
+        cv = SCROLLERS[best]
+        try:
+            if cv.yview() == (0.0, 1.0):
+                return
+            cv.yview_scroll(step if step else -1 * int(e.delta / 120 or (1 if e.delta > 0 else -1)),
+                            "units")
+        except tk.TclError:
+            SCROLLERS.pop(best, None)
+        return "break"
+
+    root.bind_all("<MouseWheel>", on_wheel)
+    root.bind_all("<Button-4>", lambda e: on_wheel(e, -1))     # Linux
+    root.bind_all("<Button-5>", lambda e: on_wheel(e, 1))
 
 
 def text_field(parent, height, value=""):
@@ -274,7 +320,7 @@ class Suggest:
         if not items or typed == self.picked:
             self.hide()
             return
-        self.items, self.idx = items[:6], -1
+        self.items, self.idx = items[:15], -1
         if not self.top:
             self.top = tk.Toplevel(self.w)
             self.top.wm_overrideredirect(True)
@@ -290,15 +336,17 @@ class Suggest:
                  fg="#FFFFFF", anchor="w", padx=8, pady=2,
                  font=("Segoe UI", 8, "bold")).pack(fill="x")
         self.labels = []
-        box = tk.Frame(self.top, bg=SOFT)
-        box.pack(fill="x", padx=2, pady=(0, 2))
+        outer, box, self.cv = scrollable(self.top, SOFT)
+        outer.pack(fill="both", expand=True, padx=2, pady=(0, 2))
         for i, it in enumerate(self.items):
             lb = tk.Label(box, text=it, bg=CARD, fg=TEXT, anchor="w", justify="left",
-                          wraplength=width - 28, padx=10, pady=5, cursor="hand2")
-            lb.pack(fill="x", pady=(0, 1) if i < len(self.items) - 1 else 0)
+                          wraplength=width - 44, padx=10, pady=5, cursor="hand2")
+            lb.pack(fill="x", pady=(0, 1))
             lb.bind("<Button-1>", lambda e, i=i: self.pick(i))
             lb.bind("<Enter>", lambda e, i=i: (setattr(self, "idx", i), self.paint()))
             self.labels.append(lb)
+        box.update_idletasks()
+        self.cv.configure(height=min(box.winfo_reqheight(), 260))
         self.top.update_idletasks()
         x = self.w.winfo_rootx()
         y = self.w.winfo_rooty() + self.w.winfo_height()
@@ -308,6 +356,15 @@ class Suggest:
             self.w.focus_set()
 
     def paint(self):
+        if self.idx >= 0 and self.labels:              # держать выделенную строку в видимой области
+            lb = self.labels[self.idx]
+            total = max(lb.master.winfo_height(), 1)
+            top, bot = self.cv.yview()
+            y0, y1 = lb.winfo_y() / total, (lb.winfo_y() + lb.winfo_height()) / total
+            if y0 < top:
+                self.cv.yview_moveto(y0)
+            elif y1 > bot:
+                self.cv.yview_moveto(y1 - (bot - top))
         for i, lb in enumerate(self.labels):
             lb.configure(bg=HOVER if i == self.idx else CARD,
                          fg=ACCENT_D if i == self.idx else TEXT)
@@ -481,114 +538,83 @@ class MaterialsDialog(tk.Toplevel):
         messagebox.showinfo("Импорт", f"Добавлено: {n}", parent=self)
 
 
-class SignerForm(tk.Toplevel):
-    """Форма одного подписанта."""
-
-    def __init__(self, parent, rep=None):
-        super().__init__(parent)
-        self.title("Подписант")
-        self.configure(bg=BG)
-        self.transient(parent)
-        self.grab_set()
-        self.result = None
-        rep = rep or {"role": "", "org": "", "position": "", "name": ""}
-        f = ttk.Frame(self, padding=20)
-        f.pack(fill="both", expand=True)
-        f.columnconfigure(0, weight=1)
-        self.v = {}
-        for i, (k, t) in enumerate((("role", "Роль"), ("org", "Организация"),
-                                    ("position", "Должность"), ("name", "Ф.И.О. (Иванов И.И.)"))):
-            ttk.Label(f, text=t, style="Muted.TLabel").grid(row=2 * i, column=0, sticky="w")
-            self.v[k] = tk.StringVar(value=rep[k])
-            w = (ttk.Combobox(f, textvariable=self.v[k], values=ROLES, width=44) if k == "role"
-                 else ttk.Entry(f, textvariable=self.v[k], width=46))
-            w.grid(row=2 * i + 1, column=0, sticky="ew", pady=(0, 10))
-            self.v[k].trace_add("write", lambda *_, var=self.v[k]: (
-                var.get()[:1].islower() and var.set(var.get()[:1].upper() + var.get()[1:])))
-        bar = ttk.Frame(f)
-        bar.grid(row=8, column=0, sticky="e", pady=(6, 0))
-        ttk.Button(bar, text="Отмена", command=self.destroy).pack(side="left", padx=6)
-        ttk.Button(bar, text="Сохранить", style="Accent.TButton", command=self.ok).pack(side="left")
-        self.wait_visibility()
-        self.wait_window()
-
-    def ok(self):
-        self.result = {k: cap(v.get()) for k, v in self.v.items()}
-        if not self.result["name"] and not self.result["org"]:
-            messagebox.showwarning("Подписант", "Укажите хотя бы Ф.И.О. или организацию.", parent=self)
-            return
-        self.destroy()
-
-
 class SignersDialog(tk.Toplevel):
-    """База подписантов."""
+    """База подписантов: правка прямо в строках таблицы."""
+
+    COLS = (("role", "Роль", 22), ("org", "Организация", 28), ("position", "Должность", 30),
+            ("name", "Ф.И.О.", 20))
 
     def __init__(self, app):
         super().__init__(app)
         self.app = app
         self.title("Подписанты")
         self.configure(bg=BG)
-        self.geometry("900x460")
+        self.geometry("980x480")
         self.transient(app)
         self.grab_set()
-        tk.Label(self, text="Подписанты", bg=BG, fg=TEXT, font=("Segoe UI", 15, "bold")).pack(
-            anchor="w", padx=16, pady=(14, 2))
-        ttk.Label(self, text="Здесь хранятся данные. На главном экране подписант выбирается из списка.",
-                  style="Muted.TLabel").pack(anchor="w", padx=16)
-        mid = ttk.Frame(self, padding=(16, 8))
-        mid.pack(fill="both", expand=True)
-        self.tree = ttk.Treeview(mid, columns=("role", "org", "position", "name"),
-                                 show="headings", selectmode="browse")
-        for c, t, w in (("role", "Роль", 170), ("org", "Организация", 230),
-                        ("position", "Должность", 230), ("name", "Ф.И.О.", 170)):
-            self.tree.heading(c, text=t, anchor="w")
-            self.tree.column(c, width=w, anchor="w")
-        sb = ttk.Scrollbar(mid, command=self.tree.yview)
-        self.tree.configure(yscrollcommand=sb.set)
-        self.tree.pack(side="left", fill="both", expand=True)
-        sb.pack(side="right", fill="y")
-        self.tree.bind("<Double-1>", lambda e: self.edit())
-        bar = ttk.Frame(self, padding=(16, 4, 16, 14))
-        bar.pack(fill="x")
-        for t, c in (("Добавить", self.add), ("Изменить", self.edit), ("Удалить", self.delete)):
-            ttk.Button(bar, text=t, command=c).pack(side="left", padx=(0, 6))
-        ttk.Button(bar, text="Готово", style="Accent.TButton", command=self.destroy).pack(side="right")
-        self.refresh()
+        tk.Label(self, text="Подписанты", bg=BG, fg=TEXT, font=("Segoe UI", 14, "bold")).pack(
+            anchor="w", padx=16, pady=(12, 0))
+        ttk.Label(self, text="Пишите прямо в полях. На главном экране подписант выбирается из списка.",
+                  style="Muted.TLabel").pack(anchor="w", padx=16, pady=(0, 6))
+        bar = ttk.Frame(self, padding=(16, 6, 16, 12))
+        bar.pack(side="bottom", fill="x")
+        ttk.Button(bar, text="＋ Добавить подписанта", command=self.add).pack(side="left")
+        ttk.Button(bar, text="Сохранить", style="Accent.TButton", command=self.close).pack(side="right")
+        head = tk.Frame(self, bg=BG)
+        head.pack(fill="x", padx=(16, 32))
+        for c, (k, t, w) in enumerate(self.COLS):
+            head.columnconfigure(c, weight=w)
+            tk.Label(head, text=t, bg=BG, fg=MUTED, font=("Segoe UI", 8, "bold"), anchor="w").grid(
+                row=0, column=c, sticky="ew", padx=3)
+        head.columnconfigure(len(self.COLS), minsize=30)
+        outer, self.grid_box, _ = scrollable(self, BG)
+        outer.pack(fill="both", expand=True, padx=(16, 16))
+        self.rows = []
+        for r in app.signers:
+            self.add_row(r)
+        self.protocol("WM_DELETE_WINDOW", self.close)
 
-    def refresh(self):
-        self.tree.delete(*self.tree.get_children())
-        for i, r in enumerate(self.app.signers):
-            self.tree.insert("", "end", iid=str(i),
-                             values=(r["role"], r["org"], r["position"], r["name"]))
-        save_json(SIGN_FILE, self.app.signers)
-        self.app.refresh_signer_lists()
-
-    def cur(self):
-        s = self.tree.selection()
-        return int(s[0]) if s else None
+    def add_row(self, rep=None):
+        rep = rep or {"role": "", "org": "", "position": "", "name": ""}
+        f = tk.Frame(self.grid_box, bg=BG)
+        f.pack(fill="x", pady=2)
+        row = {"frame": f, "orig": dict(rep)}
+        for c, (k, t, w) in enumerate(self.COLS):
+            f.columnconfigure(c, weight=w)
+            v = tk.StringVar(value=rep.get(k, ""))
+            v.trace_add("write", lambda *_, v=v: v.get()[:1].islower()
+                        and v.set(v.get()[:1].upper() + v.get()[1:]))
+            w_ = (ttk.Combobox(f, textvariable=v, values=ROLES) if k == "role"
+                  else ttk.Entry(f, textvariable=v))
+            w_.grid(row=0, column=c, sticky="ew", padx=3)
+            row[k] = v
+        ttk.Button(f, text="✕", width=2, style="Icon.TButton",
+                   command=lambda: self.remove(row)).grid(row=0, column=len(self.COLS))
+        self.rows.append(row)
+        return row
 
     def add(self):
-        r = SignerForm(self).result
-        if r:
-            self.app.signers.append(r)
-            self.refresh()
+        row = self.add_row()
+        row["frame"].winfo_children()[0].focus_set()
 
-    def edit(self):
-        i = self.cur()
-        if i is None:
-            return
-        old = self.app.signers[i]
-        r = SignerForm(self, old).result
-        if r:
-            self.app.signers[i] = r
-            self.app.replace_rep(old, r)
-            self.refresh()
+    def remove(self, row):
+        row["frame"].destroy()
+        self.rows.remove(row)
 
-    def delete(self):
-        i = self.cur()
-        if i is not None:
-            del self.app.signers[i]
-            self.refresh()
+    def close(self):
+        new = []
+        for row in self.rows:
+            r = {k: cap(row[k].get()) for k, *_ in self.COLS}
+            if not (r["name"] or r["org"]):
+                continue
+            if row["orig"].get("name") or row["orig"].get("org"):
+                if row["orig"] != r:              # выбранные на главном экране строки обновятся
+                    self.app.replace_rep(row["orig"], r)
+            new.append(r)
+        self.app.signers[:] = new
+        save_json(SIGN_FILE, new)
+        self.app.refresh_signer_lists()
+        self.destroy()
 
 
 class App(tk.Tk):
@@ -649,19 +675,10 @@ class App(tk.Tk):
         ttk.Button(foot, text="Сформировать акт (Word)", style="Ok.TButton",
                    command=self.make).pack(side="right")
 
-        wrap = ttk.Frame(self)
+        wrap, body, cv = scrollable(self, BG)
         wrap.pack(fill="both", expand=True)
-        cv = tk.Canvas(wrap, bg=BG, highlightthickness=0)
-        sb = ttk.Scrollbar(wrap, orient="vertical", command=cv.yview)
-        cv.configure(yscrollcommand=sb.set)
-        sb.pack(side="right", fill="y")
-        cv.pack(side="left", fill="both", expand=True)
-        body = ttk.Frame(cv, padding=(16, 10, 16, 10))
-        win = cv.create_window((0, 0), window=body, anchor="nw")
-        body.bind("<Configure>", lambda e: cv.configure(scrollregion=cv.bbox("all")))
-        cv.bind("<Configure>", lambda e: cv.itemconfigure(win, width=e.width))
-        self.bind_all("<MouseWheel>", lambda e: self.focus_get().winfo_class() != "Text"
-                      and cv.yview_scroll(-1 * (e.delta // 120), "units"))
+        body.configure(padx=16, pady=10)
+        install_wheel(self)
         body.columnconfigure(0, weight=1)
 
         r = 0
