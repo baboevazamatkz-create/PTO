@@ -9,6 +9,7 @@ from generator import generate
 
 APP_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
 MAT_FILE = APP_DIR / "materials.json"
+SIGN_FILE = APP_DIR / "signers.json"
 LAST_FILE = APP_DIR / "last_project.json"
 
 ROLES = ["Заказчика", "подрядчика", "технического надзора", "авторского надзора",
@@ -20,13 +21,20 @@ TEXT, MUTED, ACCENT, ACCENT_D = "#1F2933", "#7B8794", "#2F6FEB", "#2459C4"
 DEFAULT = {
     "act_no": "", "works": "", "docs": "", "materials_sel": [],
     "start": "", "end": "", "next_works": "",
-    "reps": [
-        {"on": True, "role": "Заказчика", "org": "", "position": "", "name": ""},
-        {"on": True, "role": "подрядчика", "org": "", "position": "", "name": ""},
-        {"on": True, "role": "технического надзора", "org": "", "position": "", "name": ""},
-        {"on": True, "role": "авторского надзора", "org": "", "position": "", "name": ""},
-    ],
+    "reps": [],
 }
+
+DEFAULT_SIGNERS = [
+    {"role": "Заказчика", "org": "", "position": "", "name": ""},
+    {"role": "подрядчика", "org": "", "position": "", "name": ""},
+    {"role": "технического надзора", "org": "", "position": "", "name": ""},
+    {"role": "авторского надзора", "org": "", "position": "", "name": ""},
+]
+
+
+def rep_label(r):
+    label = f'{r["role"].capitalize()}: {r["name"]}'
+    return label + (f' — {r["org"]}' if r["org"] else "")
 
 
 def load_json(path, default):
@@ -214,6 +222,114 @@ class MaterialsDialog(tk.Toplevel):
         messagebox.showinfo("Импорт", f"Добавлено: {n}", parent=self)
 
 
+class SignerForm(tk.Toplevel):
+    """Форма одного подписанта."""
+
+    def __init__(self, parent, rep=None):
+        super().__init__(parent)
+        self.title("Подписант")
+        self.configure(bg=BG)
+        self.transient(parent)
+        self.grab_set()
+        self.result = None
+        rep = rep or {"role": "", "org": "", "position": "", "name": ""}
+        f = ttk.Frame(self, padding=20)
+        f.pack(fill="both", expand=True)
+        f.columnconfigure(0, weight=1)
+        self.v = {}
+        for i, (k, t) in enumerate((("role", "Роль"), ("org", "Организация"),
+                                    ("position", "Должность"), ("name", "Ф.И.О. (Иванов И.И.)"))):
+            ttk.Label(f, text=t, style="Muted.TLabel").grid(row=2 * i, column=0, sticky="w")
+            self.v[k] = tk.StringVar(value=rep[k])
+            w = (ttk.Combobox(f, textvariable=self.v[k], values=ROLES, width=44) if k == "role"
+                 else ttk.Entry(f, textvariable=self.v[k], width=46))
+            w.grid(row=2 * i + 1, column=0, sticky="ew", pady=(0, 10))
+        bar = ttk.Frame(f)
+        bar.grid(row=8, column=0, sticky="e", pady=(6, 0))
+        ttk.Button(bar, text="Отмена", command=self.destroy).pack(side="left", padx=6)
+        ttk.Button(bar, text="Сохранить", style="Accent.TButton", command=self.ok).pack(side="left")
+        self.wait_visibility()
+        self.wait_window()
+
+    def ok(self):
+        self.result = {k: v.get().strip() for k, v in self.v.items()}
+        if not self.result["name"] and not self.result["org"]:
+            messagebox.showwarning("Подписант", "Укажите хотя бы Ф.И.О. или организацию.", parent=self)
+            return
+        self.destroy()
+
+
+class SignersDialog(tk.Toplevel):
+    """База подписантов."""
+
+    def __init__(self, app):
+        super().__init__(app)
+        self.app = app
+        self.title("Подписанты")
+        self.configure(bg=BG)
+        self.geometry("900x460")
+        self.transient(app)
+        self.grab_set()
+        tk.Label(self, text="Подписанты", bg=BG, fg=TEXT, font=("Segoe UI", 15, "bold")).pack(
+            anchor="w", padx=16, pady=(14, 2))
+        ttk.Label(self, text="Здесь хранятся данные. На главном экране подписант выбирается из списка.",
+                  style="Muted.TLabel").pack(anchor="w", padx=16)
+        mid = ttk.Frame(self, padding=(16, 8))
+        mid.pack(fill="both", expand=True)
+        self.tree = ttk.Treeview(mid, columns=("role", "org", "position", "name"),
+                                 show="headings", selectmode="browse")
+        for c, t, w in (("role", "Роль", 170), ("org", "Организация", 230),
+                        ("position", "Должность", 230), ("name", "Ф.И.О.", 170)):
+            self.tree.heading(c, text=t, anchor="w")
+            self.tree.column(c, width=w, anchor="w")
+        sb = ttk.Scrollbar(mid, command=self.tree.yview)
+        self.tree.configure(yscrollcommand=sb.set)
+        self.tree.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        self.tree.bind("<Double-1>", lambda e: self.edit())
+        bar = ttk.Frame(self, padding=(16, 4, 16, 14))
+        bar.pack(fill="x")
+        for t, c in (("Добавить", self.add), ("Изменить", self.edit), ("Удалить", self.delete)):
+            ttk.Button(bar, text=t, command=c).pack(side="left", padx=(0, 6))
+        ttk.Button(bar, text="Готово", style="Accent.TButton", command=self.destroy).pack(side="right")
+        self.refresh()
+
+    def refresh(self):
+        self.tree.delete(*self.tree.get_children())
+        for i, r in enumerate(self.app.signers):
+            self.tree.insert("", "end", iid=str(i),
+                             values=(r["role"], r["org"], r["position"], r["name"]))
+        save_json(SIGN_FILE, self.app.signers)
+        self.app.refresh_signer_lists()
+
+    def cur(self):
+        s = self.tree.selection()
+        return int(s[0]) if s else None
+
+    def add(self):
+        r = SignerForm(self).result
+        if r:
+            self.app.signers.append(r)
+            self.refresh()
+
+    def edit(self):
+        i = self.cur()
+        if i is None:
+            return
+        old = self.app.signers[i]
+        r = SignerForm(self, old).result
+        if r:
+            self.app.signers[i] = r
+            self.app.replace_rep(old, r)
+            self.refresh()
+
+    def delete(self):
+        i = self.cur()
+        if i is not None:
+            del self.app.signers[i]
+            self.refresh()
+
+
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -222,9 +338,12 @@ class App(tk.Tk):
         self.minsize(760, 560)
         setup_style(self)
         self.mats = load_json(MAT_FILE, [])
+        self.signers = load_json(SIGN_FILE, DEFAULT_SIGNERS)
         data = {**DEFAULT, **load_json(LAST_FILE, {})}
+        if not data["reps"]:
+            data["reps"] = [{"on": True, "role": "", "org": "", "position": "", "name": ""}]
         self.chosen = set(data["materials_sel"])
-        self.rows = []          # [{vars..., frame}]
+        self.rows = []          # [{"on": BooleanVar, "var": StringVar, "rep": dict, "cb": Combobox}]
         self.reps_data = [dict(r) for r in data["reps"]]
         self.build(data)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -235,8 +354,9 @@ class App(tk.Tk):
         head.pack(fill="x")
         tk.Label(head, text="Акт освидетельствования скрытых работ", bg=BG, fg=TEXT,
                  font=("Segoe UI", 15, "bold")).pack(side="left")
-        ttk.Button(head, text="Сохранить проект", command=self.save_project).pack(side="right")
-        ttk.Button(head, text="Открыть проект", command=self.open_project).pack(side="right", padx=6)
+        ttk.Button(head, text="Сохранить", command=self.save_project).pack(side="right")
+        ttk.Button(head, text="Подписанты", command=lambda: SignersDialog(self)).pack(side="right", padx=(0, 6))
+        ttk.Button(head, text="Открыть", command=self.open_project).pack(side="right", padx=6)
 
         foot = ttk.Frame(self, padding=(24, 10, 24, 16))
         foot.pack(side="bottom", fill="x")
@@ -274,7 +394,7 @@ class App(tk.Tk):
         r += 1
 
         # 2. представители
-        section("Мы, нижеподписавшиеся — представители")
+        section("Мы, нижеподписавшиеся — представители (выбор из списка «Подписанты»)")
         self.reps_frame = ttk.Frame(body)
         self.reps_frame.grid(row=r, column=0, sticky="ew")
         r += 1
@@ -322,37 +442,40 @@ class App(tk.Tk):
         self.next_works.grid(row=r, column=0, sticky="ew")
 
     # ---------- представители
+    def signer_labels(self):
+        return [rep_label(r) for r in self.signers]
+
     def rep_draw(self):
         for w in self.reps_frame.winfo_children():
             w.destroy()
         self.rows = []
         f = self.reps_frame
-        f.columnconfigure(2, weight=2)
-        f.columnconfigure(3, weight=2)
-        f.columnconfigure(4, weight=2)
-        for c, t in ((1, "Роль"), (2, "Организация"), (3, "Должность"), (4, "Ф.И.О.")):
-            ttk.Label(f, text=t, style="Muted.TLabel").grid(row=0, column=c, sticky="w", padx=3)
+        f.columnconfigure(1, weight=1)
         for i, rep in enumerate(self.reps_data):
-            v = {"on": tk.BooleanVar(value=rep["on"]), "role": tk.StringVar(value=rep["role"]),
-                 "org": tk.StringVar(value=rep["org"]), "position": tk.StringVar(value=rep["position"]),
-                 "name": tk.StringVar(value=rep["name"])}
-            self.rows.append(v)
-            g = i + 1
-            ttk.Checkbutton(f, variable=v["on"]).grid(row=g, column=0, padx=(0, 4), pady=3)
-            ttk.Combobox(f, textvariable=v["role"], values=ROLES, width=22).grid(
-                row=g, column=1, padx=3, pady=3, sticky="ew")
-            for c, k in ((2, "org"), (3, "position"), (4, "name")):
-                ttk.Entry(f, textvariable=v[k]).grid(row=g, column=c, padx=3, pady=3, sticky="ew")
+            row = {"on": tk.BooleanVar(value=rep.get("on", True)), "rep": dict(rep),
+                   "var": tk.StringVar(value=rep_label(rep) if rep.get("role") else "")}
+            self.rows.append(row)
+            ttk.Checkbutton(f, variable=row["on"]).grid(row=i, column=0, padx=(0, 6), pady=3)
+            cb = ttk.Combobox(f, textvariable=row["var"], values=self.signer_labels(),
+                              state="readonly")
+            cb.grid(row=i, column=1, sticky="ew", pady=3)
+            cb.bind("<<ComboboxSelected>>", lambda e, row=row: self.rep_pick(row))
+            row["cb"] = cb
             ttk.Button(f, text="↑", width=2, style="Icon.TButton",
-                       command=lambda i=i: self.rep_move(i, -1)).grid(row=g, column=5)
+                       command=lambda i=i: self.rep_move(i, -1)).grid(row=i, column=2)
             ttk.Button(f, text="↓", width=2, style="Icon.TButton",
-                       command=lambda i=i: self.rep_move(i, 1)).grid(row=g, column=6)
+                       command=lambda i=i: self.rep_move(i, 1)).grid(row=i, column=3)
             ttk.Button(f, text="✕", width=2, style="Icon.TButton",
-                       command=lambda i=i: self.rep_del(i)).grid(row=g, column=7)
+                       command=lambda i=i: self.rep_del(i)).grid(row=i, column=4)
+
+    def rep_pick(self, row):
+        i = row["cb"].current()
+        if i >= 0:
+            row["rep"] = dict(self.signers[i])
 
     def rep_read(self):
-        self.reps_data = [{"on": v["on"].get(), **{k: v[k].get().strip() for k in
-                           ("role", "org", "position", "name")}} for v in self.rows]
+        self.reps_data = [{"on": r["on"].get(), **{k: r["rep"].get(k, "") for k in
+                           ("role", "org", "position", "name")}} for r in self.rows]
 
     def rep_add(self):
         self.rep_read()
@@ -370,6 +493,17 @@ class App(tk.Tk):
         if 0 <= j < len(self.reps_data):
             self.reps_data[i], self.reps_data[j] = self.reps_data[j], self.reps_data[i]
             self.rep_draw()
+
+    def refresh_signer_lists(self):
+        for r in self.rows:
+            r["cb"].configure(values=self.signer_labels())
+
+    def replace_rep(self, old, new):
+        """Подписант изменён в базе — обновить уже выбранные строки."""
+        for r in self.rows:
+            if all(r["rep"].get(k) == old[k] for k in old):
+                r["rep"] = dict(new)
+                r["var"].set(rep_label(new))
 
     # ---------- материалы
     def update_mat_summary(self):
@@ -391,7 +525,8 @@ class App(tk.Tk):
         return {"act_no": self.act_no.get().strip(), "works": g(self.works), "docs": g(self.docs),
                 "materials_sel": [m["name"] for m in self.mats if m["name"] in self.chosen],
                 "start": self.start.get().strip(), "end": self.end.get().strip(),
-                "next_works": g(self.next_works), "reps": self.reps_data}
+                "next_works": g(self.next_works),
+                "reps": [r for r in self.reps_data if r["role"] or r["name"] or r["org"]]}
 
     def apply(self, d):
         d = {**DEFAULT, **d}
