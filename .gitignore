@@ -3,3 +3,4 @@ __pycache__/
 knowledge*.json
 last_project.json
 .data/
+test_print/
