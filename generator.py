@@ -80,11 +80,12 @@ def ptab(p, leader=None, underline=False):
 def to_edge(p, width):
     """Линия от конца значения до правого поля.
 
-    Позиционная табуляция Word (ptab) с заполнителем «подчёркивание»: она всегда идёт ровно до
+    Подчёркнутая позиционная табуляция Word (ptab, без заполнителя — иначе Word рисует вторую линию
+    из символов «_» над подчёркиванием): она всегда идёт ровно до
     правого поля и не зависит от позиций табуляции абзаца. Обычная правая табуляция на самом
     поле заставляла Word бесконечно перекомпоновывать страницу при печати.
     """
-    ptab(p, "underscore", underline=True)
+    ptab(p, underline=True)
 
 
 def bottom_line(p):
@@ -281,7 +282,7 @@ def generate(data, out_path, template=None):
         add_tab(p, C2, WD_TAB_ALIGNMENT.CENTER)
         U = {"u": True}                           # поле расшифровки подчёркнуто целиком
         set_runs(p, parts + [("\t\t/", {}), ("\t", U), (r["name"], U)])
-        ptab(p, "underscore", underline=True)        # поле расшифровки — до правого поля
+        ptab(p, underline=True)        # поле расшифровки — до правого поля
         p = new_par(proto_sigcap)
         add_tab(p, C1, WD_TAB_ALIGNMENT.CENTER)
         add_tab(p, C2, WD_TAB_ALIGNMENT.CENTER)
