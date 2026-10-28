@@ -1,0 +1,21 @@
+name: build-exe
+on: [push, workflow_dispatch]
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install python-docx pyinstaller
+      - run: pyinstaller --noconsole --onefile --name akt --add-data "template.docx;." app.py
+      - run: copy materials.json dist\
+      - uses: actions/upload-artifact@v4
+        with: {name: akt-windows, path: dist}
+      - run: Compress-Archive -Path dist\* -DestinationPath akt-windows.zip
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          files: akt-windows.zip
