@@ -21,6 +21,7 @@ ROLES = ["Заказчика", "Подрядчика", "Технического
 # Палитра «Ivory»: тёплая бумага, чернила и золото-шампань
 BG, CARD, FIELD, LINE, SOFT = "#F4EFE6", "#FBF9F5", "#FFFFFF", "#E4DDD0", "#F1EADD"
 TEXT, MUTED, ACCENT, ACCENT_D = "#1B1813", "#8A8277", "#9A7B44", "#7E6334"
+SAVED = "#44705B"                 # изумрудный из палитры Altyn
 INK_ON, CHAMPAGNE, HOVER = "#F6F2EA", "#C8A86B", "#EFE3CB"
 PAPER_TOP, PAPER_BOTTOM = "#F6F2EA", "#EDE6DA"
 SERIF = "Georgia"
@@ -182,7 +183,7 @@ def setup_style(root):
         s.configure(name, background=TEXT, foreground=INK_ON, padding=(18, 8), borderwidth=0,
                     font=(fam, 9, "bold"), focuscolor=TEXT, lightcolor=TEXT, darkcolor=TEXT)
         s.map(name, background=[("active", ACCENT)], foreground=[("active", "#FFFFFF")])
-    s.configure("Link.TButton", background=CARD, foreground=ACCENT, padding=(0, 4), borderwidth=0,
+    s.configure("Link.TButton", background=CARD, foreground=ACCENT, padding=(0, 2), borderwidth=0,
                 focuscolor=CARD, lightcolor=CARD, darkcolor=CARD)
     s.map("Link.TButton", background=[("active", CARD)], foreground=[("active", ACCENT_D)])
     s.configure("Icon.TButton", background=CARD, foreground=MUTED, padding=(5, 3), borderwidth=0,
@@ -241,12 +242,19 @@ def install_wheel(root):
     root.bind_all("<MouseWheel>", on_wheel)
     root.bind_all("<Button-4>", lambda e: on_wheel(e, -1))     # Linux
     root.bind_all("<Button-5>", lambda e: on_wheel(e, 1))
+    # поля не листаются колесом (выпадающий список не меняет значение, текст не прокручивается) —
+    # вместо этого прокручивается окно
+    for cls in ("TCombobox", "Text", "TEntry", "TSpinbox"):
+        root.bind_class(cls, "<MouseWheel>", on_wheel)
+        root.bind_class(cls, "<Button-4>", lambda e: on_wheel(e, -1))
+        root.bind_class(cls, "<Button-5>", lambda e: on_wheel(e, 1))
 
 
 def text_field(parent, height, value=""):
     t = tk.Text(parent, height=height, wrap="word", relief="flat", bg=FIELD, fg=TEXT,
+                spacing1=0, spacing3=0,
                 selectbackground=HOVER, selectforeground=TEXT,
-                insertbackground=TEXT, padx=6, pady=4, highlightthickness=1,
+                insertbackground=TEXT, padx=6, pady=3, highlightthickness=1,
                 highlightbackground=LINE, highlightcolor=ACCENT, undo=True)
     t.insert("1.0", value)
     auto_cap(t)
@@ -624,6 +632,10 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Акты скрытых работ")
+        try:
+            self.iconbitmap(default=str(base_dir() / "akt.ico"))
+        except tk.TclError:
+            pass
         self.geometry("860x680")
         self.minsize(760, 560)
         setup_style(self)
@@ -645,44 +657,46 @@ class App(tk.Tk):
 
     # ---------- построение окна
     def build(self, data):
-        head = tk.Canvas(self, height=64, highlightthickness=0, bg=BG)
+        head = tk.Canvas(self, height=50, highlightthickness=0, bg=BG)
         head.pack(fill="x")
 
         def paint_head(e):
             head.delete("grad")
             c1 = [int(PAPER_TOP[i:i + 2], 16) for i in (1, 3, 5)]
             c2 = [int(BG[i:i + 2], 16) for i in (1, 3, 5)]
-            for y in range(0, 64, 2):            # мягкая вертикальная «бумага»
-                t = y / 64
+            for y in range(0, 50, 2):            # мягкая вертикальная «бумага»
+                t = y / 50
                 col = "#%02x%02x%02x" % tuple(int(a + (b - a) * t) for a, b in zip(c1, c2))
                 head.create_rectangle(0, y, e.width, y + 2, fill=col, outline=col, tags="grad")
-            head.create_line(16, 63, e.width - 16, 63, fill=LINE, tags="grad")
+            head.create_line(16, 49, e.width - 16, 49, fill=LINE, tags="grad")
             head.tag_lower("grad")
             x = e.width - 16
             for b, win in reversed(btn_wins):
-                head.coords(win, x, 32)
+                head.coords(win, x, 25)
                 x -= b.winfo_reqwidth() + 6
         head.bind("<Configure>", paint_head)
-        head.create_text(20, 26, text="А К Т Ы", anchor="w", fill=ACCENT,
-                         font=(SERIF, 17, "bold"))
-        head.create_text(21, 47, text=spaced("освидетельствование скрытых работ"), anchor="w",
+        head.create_text(20, 19, text="А К Т Ы", anchor="w", fill=ACCENT,
+                         font=(SERIF, 14, "bold"))
+        head.create_text(21, 37, text=spaced("освидетельствование скрытых работ"), anchor="w",
                          fill=MUTED, font=("Segoe UI", 7, "bold"))
         btn_wins = []
         for t, c in (("Импорт актов", self.import_acts), ("Подписанты", lambda: SignersDialog(self)),
                      ("Открыть", self.open_project), ("Сохранить", self.save_project)):
             b = ttk.Button(head, text=t, style="Head.TButton", command=c)
-            btn_wins.append((b, head.create_window(0, 32, window=b, anchor="e")))
+            btn_wins.append((b, head.create_window(0, 25, window=b, anchor="e")))
 
-        foot = ttk.Frame(self, padding=(20, 8, 20, 10))
+        foot = ttk.Frame(self, padding=(18, 6, 18, 8))
         foot.pack(side="bottom", fill="x")
         tk.Frame(self, height=1, bg=LINE).pack(side="bottom", fill="x")
         foot.configure(style="TFrame")
         ttk.Button(foot, text="Сформировать акт (Word)", style="Ok.TButton",
                    command=self.make).pack(side="right")
+        self.saved_lbl = tk.Label(foot, text="", bg=BG, fg=SAVED, font=("Segoe UI", 10, "bold"))
+        self.saved_lbl.pack(side="right", padx=12)
 
         wrap, body, cv = scrollable(self, BG)
         wrap.pack(fill="both", expand=True)
-        body.configure(padx=18, pady=14)
+        body.configure(padx=16, pady=8)
         install_wheel(self)
         body.columnconfigure(0, weight=1)
 
@@ -696,12 +710,12 @@ class App(tk.Tk):
             num[0] += 1
             card = tk.Frame(body, bg=CARD, highlightthickness=1, highlightbackground=LINE,
                             highlightcolor=CHAMPAGNE)
-            card.grid(row=r, column=0, sticky="ew", pady=(0, 10))
+            card.grid(row=r, column=0, sticky="ew", pady=(0, 6))
             r += 1
-            inner = tk.Frame(card, bg=CARD, padx=16, pady=10)
+            inner = tk.Frame(card, bg=CARD, padx=14, pady=6)
             inner.pack(fill="both", expand=True)
             cap_ = tk.Frame(inner, bg=CARD)
-            cap_.pack(anchor="w", pady=(0, 6))
+            cap_.pack(anchor="w", pady=(0, 3))
             tk.Label(cap_, text=f"{num[0]:02d}", bg=CARD, fg=ACCENT,
                      font=(SERIF, 11, "bold")).pack(side="left")
             tk.Label(cap_, text="   " + spaced(title), bg=CARD, fg=MUTED,
@@ -718,7 +732,7 @@ class App(tk.Tk):
         self.reps_frame = ttk.Frame(c, style="Card.TFrame")
         self.reps_frame.pack(fill="x")
         ttk.Button(c, text="＋ Добавить представителя", style="Link.TButton",
-                   command=self.rep_add).pack(anchor="w", pady=(2, 0))
+                   command=self.rep_add).pack(anchor="w")
         self.rep_draw()
 
         # 3. работы
@@ -735,7 +749,7 @@ class App(tk.Tk):
         self.materials = text_field(c, 2, data["materials_text"])
         self.materials.pack(fill="x")
         ttk.Button(c, text="＋ Выбрать из базы материалов", style="Link.TButton",
-                   command=self.open_materials).pack(anchor="w", pady=(2, 0))
+                   command=self.open_materials).pack(anchor="w")
 
         # 5. даты
         c = section("Даты")
@@ -889,6 +903,7 @@ class App(tk.Tk):
                                          initialfile=f"akt_{self.act_no.get()}.json")
         if p:
             save_json(p, self.collect())
+            self.flash_saved(f"✓  Проект сохранён: {Path(p).name}")
 
     def make(self):
         d = self.collect()
@@ -907,7 +922,14 @@ class App(tk.Tk):
             return
         save_json(LAST_FILE, self.collect())
         self.learn(d)
-        messagebox.showinfo("Готово", f"Акт сохранён:\n{p}")
+        self.flash_saved(f"✓  Сохранено: {Path(p).name}")
+
+    def flash_saved(self, text):
+        """Галочка рядом с кнопкой вместо всплывающего окна; гаснет сама."""
+        self.saved_lbl.configure(text=text)
+        if getattr(self, "_saved_job", None):
+            self.after_cancel(self._saved_job)
+        self._saved_job = self.after(6000, lambda: self.saved_lbl.configure(text=""))
 
     def on_close(self):
         save_json(LAST_FILE, self.collect())
