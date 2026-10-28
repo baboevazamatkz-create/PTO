@@ -266,6 +266,8 @@ def generate(data, out_path, template=None):
     C1, C2 = (S0 + S1) / 2, (S1 + W) / 2         # центры подстрочников
     anchor = None
 
+    sig_pars = []                                 # абзацы блока подписей
+
     def new_par(kind_proto):
         nonlocal anchor
         el = copy.deepcopy(kind_proto)
@@ -276,6 +278,7 @@ def generate(data, out_path, template=None):
         anchor = Paragraph(el, last._parent)
         anchor.alignment = 0
         anchor.paragraph_format.tab_stops.clear_all()
+        sig_pars.append(anchor)
         return anchor
 
     for r in reps:
@@ -301,6 +304,8 @@ def generate(data, out_path, template=None):
         set_runs(new_par(proto_sigcap), [("", {})])
 
     apply_fonts(doc)
+    for p in sig_pars:
+        p.paragraph_format.line_spacing = 1.15     # в подписях — интервал 1,15
     for p in edge:
         to_edge(p, W)
     dev_p.paragraph_format.space_after = Pt(0)
