@@ -6,12 +6,14 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import ttk, filedialog, messagebox, simpledialog, font as tkfont
 
-from generator import generate
+from generator import base_dir, generate
+from learn import Knowledge, import_folder, split_materials
 
 APP_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
 MAT_FILE = APP_DIR / "materials.json"
 SIGN_FILE = APP_DIR / "signers.json"
 LAST_FILE = APP_DIR / "last_project.json"
+KNOW_FILE = APP_DIR / "knowledge.json"          # акты, которые программа изучила у пользователя
 
 ROLES = ["Заказчика", "Подрядчика", "Технического надзора", "Авторского надзора",
          "Генподрядной организации", "Субподрядчика"]
@@ -21,7 +23,7 @@ TEXT, MUTED, ACCENT, ACCENT_D = "#1F2933", "#6B7A90", "#3B5BDB", "#2F4AC0"
 HEAD, HEAD_BTN, OK = "#26345E", "#3A4B80", "#2F9E44"
 
 DEFAULT = {
-    "act_no": "", "works": "", "docs": "", "materials_sel": [],
+    "act_no": "", "works": "", "docs": "", "materials_text": "",
     "start": "", "end": "", "next_works": "",
     "reps": [],
 }
@@ -192,6 +194,122 @@ def text_field(parent, height, value=""):
     return t
 
 
+def mat_text(m):
+    return (f'{m["name"]} – сертификат соответствия № {m["cert"]}.' if m["cert"]
+            else m["name"].rstrip(".") + ".")
+
+
+class Suggest:
+    """Выпадающие подсказки под текстовым полем.
+
+    provider(typed) -> список строк. Выбор заменяет текст поля целиком.
+    """
+
+    NAV = {"Up", "Down", "Return", "Escape", "Tab", "Shift_L", "Shift_R",
+           "Control_L", "Control_R", "Alt_L", "Alt_R", "Left", "Right"}
+
+    def __init__(self, widget, provider, on_pick=None):
+        self.w, self.provider, self.on_pick = widget, provider, on_pick
+        self.top = None
+        self.items, self.labels, self.idx = [], [], -1
+        self.picked = None                       # текст, выбранный из подсказки
+        widget.bind("<KeyRelease>", self.on_key, add="+")
+        widget.bind("<FocusIn>", lambda e: widget.after(80, self.show), add="+")
+        widget.bind("<FocusOut>", lambda e: widget.after(200, self.hide_if_unfocused), add="+")
+        widget.bind("<Down>", lambda e: self.move(1), add="+")
+        widget.bind("<Up>", lambda e: self.move(-1) if self.top else None, add="+")
+        widget.bind("<Return>", self.on_enter, add="+")
+        widget.bind("<Escape>", lambda e: self.hide(), add="+")
+
+    def text(self):
+        return self.w.get("1.0", "end").strip()
+
+    def on_key(self, e):
+        if e.keysym not in self.NAV:
+            self.picked = None
+            self.show()
+
+    def on_enter(self, e):
+        if self.top and self.idx >= 0:
+            self.pick(self.idx)
+            return "break"
+        return None
+
+    def move(self, d):
+        if not self.top:
+            self.show()
+            return "break"
+        self.idx = max(0, min(len(self.items) - 1, self.idx + d))
+        self.paint()
+        return "break"
+
+    def show(self):
+        if self.w.focus_get() is not self.w:
+            return
+        typed = self.text()
+        items = [x for x in self.provider(typed) if x.strip() and x.strip() != typed]
+        if not items or typed == self.picked:
+            self.hide()
+            return
+        self.items, self.idx = items[:6], -1
+        if not self.top:
+            self.top = tk.Toplevel(self.w)
+            self.top.wm_overrideredirect(True)
+            self.top.configure(bg=LINE)
+        for c in self.top.winfo_children():
+            c.destroy()
+        width = self.w.winfo_width()
+        tk.Label(self.top, text="Подсказки из прошлых актов  ·  ↑↓ Enter", bg=SOFT, fg=MUTED,
+                 anchor="w", padx=8, font=("Segoe UI", 8)).pack(fill="x", padx=1, pady=(1, 0))
+        self.labels = []
+        for i, it in enumerate(self.items):
+            lb = tk.Label(self.top, text=it, bg=FIELD, fg=TEXT, anchor="w", justify="left",
+                          wraplength=width - 24, padx=8, pady=4, cursor="hand2")
+            lb.pack(fill="x", padx=1, pady=(0, 1))
+            lb.bind("<Button-1>", lambda e, i=i: self.pick(i))
+            lb.bind("<Enter>", lambda e, i=i: (setattr(self, "idx", i), self.paint()))
+            self.labels.append(lb)
+        self.top.update_idletasks()
+        x = self.w.winfo_rootx()
+        y = self.w.winfo_rooty() + self.w.winfo_height()
+        self.top.geometry(f"{width}x{self.top.winfo_reqheight()}+{x}+{y}")
+        self.top.lift()
+        if self.w.focus_get() is not self.w:
+            self.w.focus_set()
+
+    def paint(self):
+        for i, lb in enumerate(self.labels):
+            lb.configure(bg=SOFT if i == self.idx else FIELD)
+
+    def pick(self, i):
+        val = self.items[i]
+        self.w.delete("1.0", "end")
+        self.w.insert("1.0", val)
+        self.picked = val
+        self.hide()
+        self.w.focus_set()
+        if self.on_pick:
+            self.on_pick(val)
+
+    def hide_if_unfocused(self):
+        if self.w.focus_get() is not self.w:
+            self.hide()
+
+    def hide(self):
+        if self.top:
+            self.top.destroy()
+            self.top = None
+
+
+def filter_typed(items, typed):
+    """Если пользователь уже что-то ввёл — оставить подсказки, содержащие его слова."""
+    words = [w.lower() for w in re.findall(r"\w{2,}", typed)]
+    if not words:
+        return items
+    return [x for x in items if all(w in x.lower() for w in words)] or \
+        [x for x in items if any(w in x.lower() for w in words)]
+
+
 class MaterialsDialog(tk.Toplevel):
     """Окно выбора материалов из базы."""
 
@@ -203,6 +321,7 @@ class MaterialsDialog(tk.Toplevel):
         self.geometry("820x520")
         self.transient(app)
         self.grab_set()
+        app.chosen = set()
         top = ttk.Frame(self, padding=(16, 14, 16, 4))
         top.pack(fill="x")
         tk.Label(top, text="База материалов", bg=BG, fg=TEXT, font=("Segoe UI", 15, "bold")).pack(side="left")
@@ -228,9 +347,10 @@ class MaterialsDialog(tk.Toplevel):
         bar = ttk.Frame(self, padding=(16, 4, 16, 14))
         bar.pack(fill="x")
         for t, c in (("Добавить", self.add), ("Изменить", self.edit), ("Удалить", self.delete),
-                     ("Импорт из файла", self.imp), ("Снять все", self.clear)):
+                     ("Импорт из файла", self.imp), ("Из прошлых актов", self.from_acts)):
             ttk.Button(bar, text=t, command=c).pack(side="left", padx=(0, 6))
-        ttk.Button(bar, text="Готово", style="Accent.TButton", command=self.destroy).pack(side="right")
+        ttk.Button(bar, text="Вставить отмеченные", style="Accent.TButton",
+                   command=self.insert).pack(side="right")
         self.refresh()
 
     def refresh(self):
@@ -242,11 +362,27 @@ class MaterialsDialog(tk.Toplevel):
             self.tree.insert("", "end", iid=str(i), values=(
                 "✔" if m["name"] in self.app.chosen else "", m["name"], m["cert"]))
         save_json(MAT_FILE, self.app.mats)
-        self.app.update_mat_summary()
 
     def cur(self):
         s = self.tree.selection()
         return int(s[0]) if s else None
+
+    def insert(self):
+        """Отмеченные материалы дописываются в поле «применены»."""
+        add = " ".join(mat_text(m) for m in self.app.mats if m["name"] in self.app.chosen)
+        if add:
+            box = self.app.materials
+            cur = box.get("1.0", "end").strip()
+            box.delete("1.0", "end")
+            box.insert("1.0", (cur + " " + add).strip())
+        self.destroy()
+
+    def from_acts(self):
+        have = {m["name"].lower() for m in self.app.mats}
+        new = [m for m in self.app.know.all_materials() if m["name"].lower() not in have]
+        self.app.mats += new
+        self.refresh()
+        messagebox.showinfo("Материалы", f"Добавлено из прошлых актов: {len(new)}", parent=self)
 
     def toggle(self, ev):
         if self.tree.identify_region(ev.x, ev.y) != "cell":
@@ -437,7 +573,11 @@ class App(tk.Tk):
         data = {**DEFAULT, **load_json(LAST_FILE, {})}
         if not data["reps"]:
             data["reps"] = [{"on": True, "role": "", "org": "", "position": "", "name": ""}]
-        self.chosen = set(data["materials_sel"])
+        self.chosen = set()
+        seed = load_json(base_dir() / "knowledge_seed.json", [])
+        self.know = Knowledge(seed + load_json(KNOW_FILE, []))
+        if data.get("materials_sel") and not data.get("materials_text"):
+            data["materials_text"] = self.old_materials(data["materials_sel"])
         self.rows = []          # [{"on": BooleanVar, "var": StringVar, "rep": dict, "cb": Combobox}]
         self.reps_data = [dict(r) for r in data["reps"]]
         self.build(data)
@@ -447,10 +587,10 @@ class App(tk.Tk):
     def build(self, data):
         head = tk.Frame(self, bg=HEAD, padx=20, pady=10)
         head.pack(fill="x")
-        tk.Label(head, text="Акт освидетельствования скрытых работ", bg=HEAD, fg="#FFFFFF",
+        tk.Label(head, text="Акты скрытых работ", bg=HEAD, fg="#FFFFFF",
                  font=("Segoe UI", 13, "bold")).pack(side="left")
         for t, c in (("Сохранить", self.save_project), ("Открыть", self.open_project),
-                     ("Подписанты", lambda: SignersDialog(self))):
+                     ("Подписанты", lambda: SignersDialog(self)), ("Импорт актов", self.import_acts)):
             ttk.Button(head, text=t, style="Head.TButton", command=c).pack(side="right", padx=(6, 0))
 
         foot = ttk.Frame(self, padding=(20, 8, 20, 10))
@@ -511,13 +651,12 @@ class App(tk.Tk):
 
         # 4. материалы
         section("При выполнении работ применены")
-        self.mat_box = tk.Text(body, height=2, wrap="word", relief="flat", bg=FIELD, fg=TEXT,
-                               padx=6, pady=4, cursor="hand2", highlightthickness=1,
-                               highlightbackground=LINE, state="disabled")
-        self.mat_box.grid(row=r, column=0, sticky="ew")
-        self.mat_box.bind("<Button-1>", lambda e: self.open_materials())
+        self.materials = text_field(body, 2, data["materials_text"])
+        self.materials.grid(row=r, column=0, sticky="ew")
         r += 1
-        self.update_mat_summary()
+        ttk.Button(body, text="＋ Выбрать из базы материалов", style="Link.TButton",
+                   command=self.open_materials).grid(row=r, column=0, sticky="w")
+        r += 1
 
         # 5. даты
         section("Даты (ДД.ММ.ГГГГ)")
@@ -535,6 +674,14 @@ class App(tk.Tk):
         section("Разрешается производство последующих работ")
         self.next_works = text_field(body, 1, data["next_works"])
         self.next_works.grid(row=r, column=0, sticky="ew")
+
+        # подсказки: всё, кроме самих работ, подбирается по введённым работам
+        k, works = self.know, lambda: self.works.get("1.0", "end")
+        Suggest(self.works, lambda t: k.suggest_works(t))
+        Suggest(self.docs, lambda t: filter_typed(k.suggest_docs(works()), t))
+        Suggest(self.materials, lambda t: filter_typed(
+            k._uniq([r["materials"] for r in k.related(works())], 10), t))
+        Suggest(self.next_works, lambda t: filter_typed(k.suggest_next(works()), t))
 
     # ---------- представители
     def signer_labels(self):
@@ -601,14 +748,29 @@ class App(tk.Tk):
                 r["var"].set(rep_label(new))
 
     # ---------- материалы
-    def update_mat_summary(self):
-        names = [m["name"] for m in self.mats if m["name"] in self.chosen]
-        text = "\n".join("• " + n for n in names) if names else "Нажмите, чтобы выбрать материалы…"
-        self.mat_box.configure(state="normal", fg=TEXT if names else MUTED,
-                               height=max(2, min(6, len(names))))
-        self.mat_box.delete("1.0", "end")
-        self.mat_box.insert("1.0", text)
-        self.mat_box.configure(state="disabled")
+    def old_materials(self, names):
+        by = {m["name"]: m for m in self.mats}
+        return " ".join(mat_text(by[n]) for n in names if n in by)
+
+    def import_acts(self):
+        folder = filedialog.askdirectory(title="Папка с актами (.docx, включая подпапки)")
+        if not folder:
+            return
+        self.config(cursor="watch")
+        self.update()
+        try:
+            recs = import_folder(folder)
+        finally:
+            self.config(cursor="")
+        added = [r for r in recs if self.know.add(r)]
+        save_json(KNOW_FILE, load_json(KNOW_FILE, []) + added)
+        messagebox.showinfo("Импорт актов", f"Прочитано актов: {len(recs)}\nНовых в базе: {len(added)}")
+
+    def learn(self, d):
+        rec = {k: d[k] for k in ("act_no", "works", "docs", "next_works")}
+        rec["materials"] = d["materials_text"]
+        if self.know.add(rec):
+            save_json(KNOW_FILE, load_json(KNOW_FILE, []) + [rec])
 
     def open_materials(self):
         MaterialsDialog(self)
@@ -618,7 +780,7 @@ class App(tk.Tk):
         self.rep_read()
         g = lambda t: cap(t.get("1.0", "end"))
         return {"act_no": self.act_no.get().strip(), "works": g(self.works), "docs": g(self.docs),
-                "materials_sel": [m["name"] for m in self.mats if m["name"] in self.chosen],
+                "materials_text": g(self.materials),
                 "start": self.start.get().strip(), "end": self.end.get().strip(),
                 "next_works": g(self.next_works),
                 "reps": [r for r in self.reps_data if r["role"] or r["name"] or r["org"]]}
@@ -626,15 +788,16 @@ class App(tk.Tk):
     def apply(self, d):
         d = {**DEFAULT, **d}
         self.act_no.set(d["act_no"])
-        for t, k in ((self.works, "works"), (self.docs, "docs"), (self.next_works, "next_works")):
+        if d.get("materials_sel") and not d.get("materials_text"):
+            d["materials_text"] = self.old_materials(d["materials_sel"])
+        for t, k in ((self.works, "works"), (self.docs, "docs"), (self.next_works, "next_works"),
+                     (self.materials, "materials_text")):
             t.delete("1.0", "end")
             t.insert("1.0", d[k])
         self.start.set(d["start"])
         self.end.set(d["end"])
-        self.chosen = set(d["materials_sel"])
         self.reps_data = [dict(r) for r in d["reps"]]
         self.rep_draw()
-        self.update_mat_summary()
 
     def open_project(self):
         p = filedialog.askopenfilename(filetypes=[("Проект акта", "*.json")])
@@ -649,11 +812,7 @@ class App(tk.Tk):
 
     def make(self):
         d = self.collect()
-        by_name = {m["name"]: m for m in self.mats}
-        d["materials"] = [
-            f'{by_name[n]["name"]} – сертификат соответствия № {by_name[n]["cert"]}.'
-            if by_name[n]["cert"] else by_name[n]["name"] + "."
-            for n in d["materials_sel"]]
+        d["materials"] = [d["materials_text"]]
         p = filedialog.asksaveasfilename(defaultextension=".docx", filetypes=[("Word", "*.docx")],
                                          initialfile=f"Акт № {d['act_no']}.docx")
         if not p:
@@ -667,6 +826,7 @@ class App(tk.Tk):
             messagebox.showerror("Ошибка", str(e))
             return
         save_json(LAST_FILE, self.collect())
+        self.learn(d)
         messagebox.showinfo("Готово", f"Акт сохранён:\n{p}")
 
     def on_close(self):

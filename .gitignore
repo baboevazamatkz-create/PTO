@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+knowledge*.json
+last_project.json
