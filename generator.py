@@ -1,6 +1,7 @@
 """Формирование акта: правит шаблон template.docx, сохраняя его оформление."""
 import copy
 import re
+import textwrap
 import sys
 from pathlib import Path
 from docx import Document
@@ -12,11 +13,13 @@ from docx.text.paragraph import Paragraph
 
 FONT = "Times New Roman"
 SIZE, SMALL = Pt(10), Pt(8)
+LABEL_CHARS = 58                # ширина левой колонки подписей (символов)
 ITEM_INDENT = Cm(0.6)          # отступ текста пунктов 1–5 от номера
 
 MONTHS = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля",
           "августа", "сентября", "октября", "ноября", "декабря"]
 
+HEADER_STARTS = ("форма на приложение", "сн рк", "с изменениями", "с\xa0изменениями")
 CAPTION_STARTS = ("(", "наименование ", "должность, фамилия", "при наличии отклонений")
 
 
@@ -103,7 +106,9 @@ def apply_fonts(doc):
     st.font.name, st.font.size = FONT, SIZE
     for p in doc.paragraphs:
         cap = is_caption(p)
-        size = SMALL if cap else SIZE
+        head = p.text.strip().lower().startswith(HEADER_STARTS)
+        size = SMALL if cap or head else SIZE
+        p.paragraph_format.line_spacing = 1.0      # одинарный интервал везде
         pPr = p._p.pPr
         if pPr is not None and pPr.find(qn("w:pBdr")) is not None:
             pPr.remove(pPr.find(qn("w:pBdr")))      # линии-подчёркивания абзаца заменены подчёркиванием значения
@@ -126,6 +131,12 @@ def generate(data, out_path, template=None):
     IU = {"i": True, "u": True}      # заполняемое значение: курсив + подчёркивание
     W = text_width(doc)
     edge = []                        # абзацы, где подчёркивание тянется до правого поля
+
+    # --- пустые абзацы над «Форма на приложение…» убираем
+    for p in list(doc.paragraphs):
+        if p.text.strip():
+            break
+        p._p.getparent().remove(p._p)
 
     # --- строка «город … дата» (поля остаются как в шаблоне, выравнивание — по табуляции)
     p = doc.paragraphs[find(doc, "г. ")]
@@ -228,7 +239,7 @@ def generate(data, out_path, template=None):
     proto_sigcap = copy.deepcopy(ps[s + 1]._p)
     for el in [ps[k]._p for k in range(s, len(ps) - 1)]:
         el.getparent().remove(el)
-    S0, S1 = W * 0.55, W * 0.71                  # начало и конец линии подписи
+    S0, S1 = W * 0.62, W * 0.80                  # начало и конец линии подписи (расшифровка — до W)
     C1, C2 = (S0 + S1) / 2, (S1 + W) / 2         # центры подстрочников
     anchor = None
 
@@ -246,13 +257,10 @@ def generate(data, out_path, template=None):
 
     for r in reps:
         label = f'Представитель {r["role"]}' + (f' {r["org"]}' if r["org"] else "")
-        if len(label) > 54:                       # длинная подпись — отдельной строкой
-            set_runs(new_par(proto_sig), [(label, {})])
-            p = new_par(proto_sig)
-            parts = []
-        else:
-            p = new_par(proto_sig)
-            parts = [(label, {})]
+        # длинная роль/организация переносится в левой колонке, подпись — на уровне последней строки
+        lines = textwrap.wrap(label, LABEL_CHARS) or [""]
+        p = new_par(proto_sig)
+        parts = [("\n".join(lines), {})]
         add_tab(p, S0, WD_TAB_ALIGNMENT.LEFT)
         add_tab(p, S1, WD_TAB_ALIGNMENT.LEFT, WD_TAB_LEADER.LINES)
         add_tab(p, C2, WD_TAB_ALIGNMENT.CENTER)
