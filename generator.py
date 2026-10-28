@@ -270,7 +270,11 @@ def generate(data, out_path, template=None):
     for r in reps:
         label = f'Представитель {r["role"]}' + (f' {r["org"]}' if r["org"] else "")
         # длинная роль/организация переносится в левой колонке, подпись — на уровне последней строки
-        lines = textwrap.wrap(label, LABEL_CHARS) or [""]
+        if len(label) <= LABEL_CHARS:
+            lines = [label]
+        else:                                     # перенос строго после роли: организация — с новой строки
+            lines = (textwrap.wrap(f'Представитель {r["role"]}', LABEL_CHARS)
+                     + textwrap.wrap(r["org"], LABEL_CHARS))
         p = new_par(proto_sig)
         parts = [("\n".join(lines), {})]
         add_tab(p, S0, WD_TAB_ALIGNMENT.LEFT)
