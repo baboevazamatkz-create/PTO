@@ -1,5 +1,6 @@
 """Генератор актов освидетельствования скрытых работ (Windows, tkinter)."""
 import json
+import re
 import sys
 import tkinter as tk
 from pathlib import Path
@@ -46,6 +47,72 @@ def load_json(path, default):
 
 def save_json(path, obj):
     Path(path).write_text(json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def fmt_date(v):
+    """Только цифры -> ДД.ММ.ГГГГ."""
+    d = re.sub(r"\D", "", v)[:8]
+    return ".".join(x for x in (d[:2], d[2:4], d[4:]) if x)
+
+
+def date_entry(parent, var, **kw):
+    """Поле даты: вводятся только цифры, точки расставляются сами."""
+    busy = []
+
+    def on_write(*_):
+        if busy:
+            return
+        new = fmt_date(var.get())
+        if new != var.get():
+            busy.append(1)
+            var.set(new)
+            busy.pop()
+        e.icursor("end")
+
+    e = ttk.Entry(parent, textvariable=var, **kw)
+    var.trace_add("write", on_write)
+    on_write()
+    return e
+
+
+def install_clipboard(root):
+    """Ctrl+C/V/X/A работают и при русской раскладке, плюс меню по правой кнопке."""
+    codes = {67: "<<Copy>>", 86: "<<Paste>>", 88: "<<Cut>>"}      # коды клавиш Windows
+
+    def select_all(w):
+        if isinstance(w, tk.Text):
+            w.tag_add("sel", "1.0", "end-1c")
+        elif hasattr(w, "select_range"):
+            w.select_range(0, "end")
+            w.icursor("end")
+
+    def on_ctrl(e):
+        if e.keysym.lower() in ("c", "v", "x", "a"):       # латиница — работает штатно
+            return None
+        w = e.widget
+        if e.keycode == 65:
+            select_all(w)
+            return "break"
+        if e.keycode in codes and w.winfo_class() in ("Entry", "TEntry", "TCombobox", "Text"):
+            w.event_generate(codes[e.keycode])
+            return "break"
+        return None
+
+    root.bind_all("<Control-KeyPress>", on_ctrl)
+
+    menu = tk.Menu(root, tearoff=0)
+    target = []
+    for label, ev in (("Вырезать", "<<Cut>>"), ("Копировать", "<<Copy>>"), ("Вставить", "<<Paste>>")):
+        menu.add_command(label=label, command=lambda ev=ev: target and target[0].event_generate(ev))
+    menu.add_command(label="Выделить всё", command=lambda: target and select_all(target[0]))
+
+    def popup(e):
+        target[:] = [e.widget]
+        e.widget.focus_set()
+        menu.tk_popup(e.x_root, e.y_root)
+
+    for cls in ("Entry", "TEntry", "TCombobox", "Text"):
+        root.bind_class(cls, "<Button-3>", popup)
 
 
 def setup_style(root):
@@ -337,6 +404,7 @@ class App(tk.Tk):
         self.geometry("920x780")
         self.minsize(760, 560)
         setup_style(self)
+        install_clipboard(self)
         self.mats = load_json(MAT_FILE, [])
         self.signers = load_json(SIGN_FILE, DEFAULT_SIGNERS)
         data = {**DEFAULT, **load_json(LAST_FILE, {})}
@@ -432,8 +500,8 @@ class App(tk.Tk):
         self.end = tk.StringVar(value=data["end"])
         ttk.Label(dates, text="начало", style="Muted.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Label(dates, text="окончание", style="Muted.TLabel").grid(row=0, column=1, sticky="w", padx=(12, 0))
-        ttk.Entry(dates, textvariable=self.start, width=14).grid(row=1, column=0)
-        ttk.Entry(dates, textvariable=self.end, width=14).grid(row=1, column=1, padx=(12, 0))
+        date_entry(dates, self.start, width=14).grid(row=1, column=0)
+        date_entry(dates, self.end, width=14).grid(row=1, column=1, padx=(12, 0))
         r += 1
 
         # 6. последующие работы
