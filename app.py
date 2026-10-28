@@ -1,6 +1,8 @@
 """Генератор актов освидетельствования скрытых работ (Windows, tkinter)."""
 import json
+import os
 import re
+import shutil
 import sys
 import tkinter as tk
 from pathlib import Path
@@ -10,10 +12,23 @@ from generator import base_dir, generate
 from learn import Knowledge, import_folder, split_materials
 
 APP_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
-MAT_FILE = APP_DIR / "materials.json"
-SIGN_FILE = APP_DIR / "signers.json"
-LAST_FILE = APP_DIR / "last_project.json"
-KNOW_FILE = APP_DIR / "knowledge.json"          # акты, которые программа изучила у пользователя
+# Данные программы живут в скрытой папке профиля Windows (%APPDATA%\AktsPTO), а не рядом с .exe:
+# запущенный .exe не может переписывать сам себя.
+DATA_DIR = Path(os.environ.get("APPDATA") or Path.home()) / "AktsPTO"
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+MAT_FILE = DATA_DIR / "materials.json"
+SIGN_FILE = DATA_DIR / "signers.json"
+LAST_FILE = DATA_DIR / "last_project.json"
+KNOW_FILE = DATA_DIR / "knowledge.json"          # акты, которые программа изучила у пользователя
+
+# файлы прежних версий, лежавшие рядом с программой, переносятся внутрь
+for _f in (MAT_FILE, SIGN_FILE, LAST_FILE, KNOW_FILE):
+    _old = APP_DIR / _f.name
+    if _old.exists() and not _f.exists():
+        try:
+            shutil.move(str(_old), str(_f))
+        except OSError:
+            pass
 
 ROLES = ["Заказчика", "Подрядчика", "Технического надзора", "Авторского надзора",
          "Генподрядной организации", "Субподрядчика"]
