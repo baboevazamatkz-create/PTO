@@ -18,13 +18,17 @@ KNOW_FILE = APP_DIR / "knowledge.json"          # акты, которые пр�
 ROLES = ["Заказчика", "Подрядчика", "Технического надзора", "Авторского надзора",
          "Генподрядной организации", "Субподрядчика"]
 
-BG, CARD, FIELD, LINE, SOFT = "#EDF1F8", "#FFFFFF", "#F6F8FC", "#DCE3EF", "#E8EEFB"
-TEXT, MUTED, ACCENT, ACCENT_D = "#1E2A3B", "#7484A0", "#4C6EF5", "#3B5BDB"
-HEAD, HEAD2, HEAD_BTN, OK = "#24305E", "#4561D8", "#3A4B80", "#2F9E44"
-HOVER = "#E3EAFF"
-# мягкие цвета-метки разделов
-TINTS = {"act": "#4C6EF5", "reps": "#7048E8", "works": "#1C7ED6", "docs": "#0CA678",
-         "mat": "#F59F00", "dates": "#E8590C", "next": "#2F9E44"}
+# Палитра «Ivory»: тёплая бумага, чернила и золото-шампань
+BG, CARD, FIELD, LINE, SOFT = "#F4EFE6", "#FBF9F5", "#FFFFFF", "#E4DDD0", "#F1EADD"
+TEXT, MUTED, ACCENT, ACCENT_D = "#1B1813", "#8A8277", "#9A7B44", "#7E6334"
+INK_ON, CHAMPAGNE, HOVER = "#F6F2EA", "#C8A86B", "#EFE3CB"
+PAPER_TOP, PAPER_BOTTOM = "#F6F2EA", "#EDE6DA"
+SERIF = "Georgia"
+
+
+def spaced(text):
+    """Подпись в стиле «микролейбла»: заглавные с разрядкой."""
+    return "\u200a".join(text.upper())
 
 DEFAULT = {
     "act_no": "", "works": "", "docs": "", "materials_text": "",
@@ -149,49 +153,49 @@ def setup_style(root):
     s.theme_use("clam")
     s.configure(".", background=BG, foreground=TEXT, font=(fam, 9), borderwidth=0)
     s.configure("TFrame", background=BG)
+    s.configure("Card.TFrame", background=CARD)
     s.configure("TLabel", background=BG, foreground=TEXT)
     s.configure("Muted.TLabel", foreground=MUTED, font=(fam, 9))
-    s.configure("Card.TFrame", background=CARD)
     s.configure("CardMuted.TLabel", background=CARD, foreground=MUTED, font=(fam, 8))
-    s.configure("H.TLabel", font=(fam, 8, "bold"), foreground=ACCENT)
-    s.title_font = tkfont.Font(family=fam, size=15, weight="bold")
-    s.configure("Title.TLabel", font=s.title_font)
-    s.configure("TEntry", fieldbackground=FIELD, bordercolor=LINE, lightcolor=LINE,
-                darkcolor=LINE, padding=4, relief="flat")
-    s.map("TEntry", bordercolor=[("focus", ACCENT)], lightcolor=[("focus", ACCENT)],
-          darkcolor=[("focus", ACCENT)])
-    s.configure("TCombobox", fieldbackground=FIELD, background=FIELD, bordercolor=LINE,
-                lightcolor=LINE, darkcolor=LINE, padding=4, arrowcolor=MUTED)
-    s.map("TCombobox", bordercolor=[("focus", ACCENT)], fieldbackground=[("readonly", FIELD)],
-          selectbackground=[("readonly", FIELD)], selectforeground=[("readonly", TEXT)])
+    for name in ("TEntry", "TCombobox"):
+        s.configure(name, fieldbackground=FIELD, background=FIELD, bordercolor=LINE,
+                    lightcolor=LINE, darkcolor=LINE, padding=5, relief="flat", arrowcolor=ACCENT,
+                    selectbackground=HOVER, selectforeground=TEXT)
+        s.map(name, bordercolor=[("focus", ACCENT)], lightcolor=[("focus", ACCENT)],
+              darkcolor=[("focus", ACCENT)])
+    s.map("TCombobox", fieldbackground=[("readonly", FIELD)],
+          selectbackground=[("readonly", FIELD)], selectforeground=[("readonly", TEXT)],
+          bordercolor=[("focus", ACCENT)])
     s.configure("TCheckbutton", background=CARD, focuscolor=CARD, indicatorbackground=FIELD,
-                indicatorforeground=ACCENT, bordercolor=LINE)
+                indicatorforeground=ACCENT, bordercolor=LINE, indicatorrelief="flat")
     s.map("TCheckbutton", background=[("active", CARD)],
           indicatorbackground=[("selected", FIELD)])
-    s.configure("TButton", background=SOFT, foreground=TEXT, padding=(10, 5), relief="flat",
-                focuscolor=SOFT)
-    s.map("TButton", background=[("active", LINE)])
-    s.configure("Head.TButton", background=HEAD_BTN, foreground="#FFFFFF", padding=(10, 5),
-                focuscolor=HEAD_BTN)
-    s.map("Head.TButton", background=[("active", ACCENT)])
-    s.configure("Accent.TButton", background=ACCENT, foreground="#FFFFFF", padding=(16, 7),
-                font=(fam, 9, "bold"))
-    s.map("Accent.TButton", background=[("active", ACCENT_D)])
-    s.configure("Ok.TButton", background=OK, foreground="#FFFFFF", padding=(16, 7), font=(fam, 9, "bold"))
-    s.map("Ok.TButton", background=[("active", "#2B8A3E")])
-    s.configure("Link.TButton", background=CARD, foreground=ACCENT, padding=(2, 4))
+    # кнопки: вторичные — тонкая линия по контуру, главная — «чернильная»
+    s.configure("TButton", background=CARD, foreground=TEXT, padding=(12, 5), relief="flat",
+                borderwidth=1, bordercolor=LINE, lightcolor=CARD, darkcolor=CARD, focuscolor=CARD)
+    s.map("TButton", background=[("active", HOVER)], bordercolor=[("active", ACCENT)])
+    s.configure("Head.TButton", background=CARD, foreground=TEXT, padding=(12, 5), borderwidth=1,
+                bordercolor=LINE, lightcolor=CARD, darkcolor=CARD, focuscolor=CARD)
+    s.map("Head.TButton", background=[("active", HOVER)], bordercolor=[("active", ACCENT)],
+          foreground=[("active", ACCENT_D)])
+    for name in ("Accent.TButton", "Ok.TButton"):
+        s.configure(name, background=TEXT, foreground=INK_ON, padding=(18, 8), borderwidth=0,
+                    font=(fam, 9, "bold"), focuscolor=TEXT, lightcolor=TEXT, darkcolor=TEXT)
+        s.map(name, background=[("active", ACCENT)], foreground=[("active", "#FFFFFF")])
+    s.configure("Link.TButton", background=CARD, foreground=ACCENT, padding=(0, 4), borderwidth=0,
+                focuscolor=CARD, lightcolor=CARD, darkcolor=CARD)
     s.map("Link.TButton", background=[("active", CARD)], foreground=[("active", ACCENT_D)])
-    s.configure("Icon.TButton", background=CARD, foreground=MUTED, padding=(5, 3))
-    s.map("Icon.TButton", background=[("active", SOFT)], foreground=[("active", TEXT)])
-    s.configure("Treeview", background=FIELD, fieldbackground=FIELD, rowheight=26, bordercolor=LINE,
-                borderwidth=0)
-    s.configure("Treeview.Heading", background=FIELD, foreground=MUTED, font=(fam, 9, "bold"),
+    s.configure("Icon.TButton", background=CARD, foreground=MUTED, padding=(5, 3), borderwidth=0,
+                focuscolor=CARD, lightcolor=CARD, darkcolor=CARD)
+    s.map("Icon.TButton", background=[("active", HOVER)], foreground=[("active", ACCENT_D)])
+    s.configure("Treeview", background=FIELD, fieldbackground=FIELD, rowheight=26,
+                bordercolor=LINE, borderwidth=0)
+    s.configure("Treeview.Heading", background=CARD, foreground=MUTED, font=(fam, 8, "bold"),
                 relief="flat")
-    s.map("Treeview", background=[("selected", SOFT)], foreground=[("selected", TEXT)])
-    s.configure("Vertical.TScrollbar", background="#B8C3D6", troughcolor=BG, bordercolor=BG,
-                lightcolor="#B8C3D6", darkcolor="#B8C3D6", arrowsize=12, relief="flat",
-                arrowcolor=MUTED)
-    s.map("Vertical.TScrollbar", background=[("active", ACCENT)])
+    s.map("Treeview", background=[("selected", HOVER)], foreground=[("selected", TEXT)])
+    s.configure("Vertical.TScrollbar", background="#D9CFBE", troughcolor=BG, bordercolor=BG,
+                lightcolor="#D9CFBE", darkcolor="#D9CFBE", arrowsize=0, relief="flat", width=9)
+    s.map("Vertical.TScrollbar", background=[("active", CHAMPAGNE)])
     return fam
 
 
@@ -324,7 +328,7 @@ class Suggest:
         if not self.top:
             self.top = tk.Toplevel(self.w)
             self.top.wm_overrideredirect(True)
-            self.top.configure(bg=ACCENT)
+            self.top.configure(bg=CHAMPAGNE)
             try:
                 self.top.attributes("-alpha", 0.97)
             except tk.TclError:
@@ -332,14 +336,14 @@ class Suggest:
         for c in self.top.winfo_children():
             c.destroy()
         width = self.w.winfo_width()
-        tk.Label(self.top, text="✦  Подсказки из прошлых актов   ↑↓ Enter · Esc", bg=ACCENT,
-                 fg="#FFFFFF", anchor="w", padx=8, pady=2,
-                 font=("Segoe UI", 8, "bold")).pack(fill="x")
+        tk.Label(self.top, text=spaced("Подсказки из прошлых актов") + "      ↑↓  Enter  ·  Esc",
+                 bg=CARD, fg=ACCENT, anchor="w", padx=10, pady=4,
+                 font=("Segoe UI", 7, "bold")).pack(fill="x", padx=1, pady=(1, 0))
         self.labels = []
-        outer, box, self.cv = scrollable(self.top, SOFT)
-        outer.pack(fill="both", expand=True, padx=2, pady=(0, 2))
+        outer, box, self.cv = scrollable(self.top, LINE)
+        outer.pack(fill="both", expand=True, padx=1, pady=(0, 1))
         for i, it in enumerate(self.items):
-            lb = tk.Label(box, text=it, bg=CARD, fg=TEXT, anchor="w", justify="left",
+            lb = tk.Label(box, text=it, bg=FIELD, fg=TEXT, anchor="w", justify="left",
                           wraplength=width - 44, padx=10, pady=5, cursor="hand2")
             lb.pack(fill="x", pady=(0, 1))
             lb.bind("<Button-1>", lambda e, i=i: self.pick(i))
@@ -366,8 +370,7 @@ class Suggest:
             elif y1 > bot:
                 self.cv.yview_moveto(y1 - (bot - top))
         for i, lb in enumerate(self.labels):
-            lb.configure(bg=HOVER if i == self.idx else CARD,
-                         fg=ACCENT_D if i == self.idx else TEXT)
+            lb.configure(bg=HOVER if i == self.idx else FIELD)
 
     def pick(self, i):
         val = self.items[i]
@@ -412,7 +415,7 @@ class MaterialsDialog(tk.Toplevel):
         app.chosen = set()
         top = ttk.Frame(self, padding=(16, 14, 16, 4))
         top.pack(fill="x")
-        tk.Label(top, text="База материалов", bg=BG, fg=TEXT, font=("Segoe UI", 15, "bold")).pack(side="left")
+        tk.Label(top, text="База материалов", bg=BG, fg=TEXT, font=(SERIF, 15, "bold")).pack(side="left")
         self.q = tk.StringVar()
         self.q.trace_add("write", lambda *_: self.refresh())
         ttk.Entry(top, textvariable=self.q, width=28).pack(side="right")
@@ -552,7 +555,7 @@ class SignersDialog(tk.Toplevel):
         self.geometry("980x480")
         self.transient(app)
         self.grab_set()
-        tk.Label(self, text="Подписанты", bg=BG, fg=TEXT, font=("Segoe UI", 14, "bold")).pack(
+        tk.Label(self, text="Подписанты", bg=BG, fg=TEXT, font=(SERIF, 15, "bold")).pack(
             anchor="w", padx=16, pady=(12, 0))
         ttk.Label(self, text="Пишите прямо в полях. На главном экране подписант выбирается из списка.",
                   style="Muted.TLabel").pack(anchor="w", padx=16, pady=(0, 6))
@@ -642,68 +645,76 @@ class App(tk.Tk):
 
     # ---------- построение окна
     def build(self, data):
-        head = tk.Canvas(self, height=52, highlightthickness=0, bg=HEAD)
+        head = tk.Canvas(self, height=64, highlightthickness=0, bg=BG)
         head.pack(fill="x")
 
         def paint_head(e):
             head.delete("grad")
-            w = e.width
-            c1 = [int(HEAD[i:i + 2], 16) for i in (1, 3, 5)]
-            c2 = [int(HEAD2[i:i + 2], 16) for i in (1, 3, 5)]
-            for x in range(0, w, 4):           # горизонтальный градиент
-                t = x / max(w, 1)
+            c1 = [int(PAPER_TOP[i:i + 2], 16) for i in (1, 3, 5)]
+            c2 = [int(BG[i:i + 2], 16) for i in (1, 3, 5)]
+            for y in range(0, 64, 2):            # мягкая вертикальная «бумага»
+                t = y / 64
                 col = "#%02x%02x%02x" % tuple(int(a + (b - a) * t) for a, b in zip(c1, c2))
-                head.create_rectangle(x, 0, x + 4, 52, fill=col, outline=col, tags="grad")
+                head.create_rectangle(0, y, e.width, y + 2, fill=col, outline=col, tags="grad")
+            head.create_line(16, 63, e.width - 16, 63, fill=LINE, tags="grad")
             head.tag_lower("grad")
-            x = w - 16
+            x = e.width - 16
             for b, win in reversed(btn_wins):
-                head.coords(win, x, 26)
+                head.coords(win, x, 32)
                 x -= b.winfo_reqwidth() + 6
         head.bind("<Configure>", paint_head)
-        head.create_text(20, 26, text="Акты скрытых работ", anchor="w", fill="#FFFFFF",
-                         font=("Segoe UI", 13, "bold"))
+        head.create_text(20, 26, text="А К Т Ы", anchor="w", fill=ACCENT,
+                         font=(SERIF, 17, "bold"))
+        head.create_text(21, 47, text=spaced("освидетельствование скрытых работ"), anchor="w",
+                         fill=MUTED, font=("Segoe UI", 7, "bold"))
         btn_wins = []
         for t, c in (("Импорт актов", self.import_acts), ("Подписанты", lambda: SignersDialog(self)),
                      ("Открыть", self.open_project), ("Сохранить", self.save_project)):
             b = ttk.Button(head, text=t, style="Head.TButton", command=c)
-            btn_wins.append((b, head.create_window(0, 26, window=b, anchor="e")))
+            btn_wins.append((b, head.create_window(0, 32, window=b, anchor="e")))
 
         foot = ttk.Frame(self, padding=(20, 8, 20, 10))
         foot.pack(side="bottom", fill="x")
         tk.Frame(self, height=1, bg=LINE).pack(side="bottom", fill="x")
-        foot.configure(style="Card.TFrame")
+        foot.configure(style="TFrame")
         ttk.Button(foot, text="Сформировать акт (Word)", style="Ok.TButton",
                    command=self.make).pack(side="right")
 
         wrap, body, cv = scrollable(self, BG)
         wrap.pack(fill="both", expand=True)
-        body.configure(padx=16, pady=10)
+        body.configure(padx=18, pady=14)
         install_wheel(self)
         body.columnconfigure(0, weight=1)
 
         r = 0
 
-        def section(title, tint):
-            """Белая карточка с цветной меткой слева."""
+        num = [0]
+
+        def section(title, tint=None):
+            """Карточка: номер раздела золотом и подпись-микролейбл."""
             nonlocal r
-            card = tk.Frame(body, bg=CARD, highlightthickness=1, highlightbackground=LINE)
-            card.grid(row=r, column=0, sticky="ew", pady=(0, 8))
+            num[0] += 1
+            card = tk.Frame(body, bg=CARD, highlightthickness=1, highlightbackground=LINE,
+                            highlightcolor=CHAMPAGNE)
+            card.grid(row=r, column=0, sticky="ew", pady=(0, 10))
             r += 1
-            tk.Frame(card, bg=tint, width=4).pack(side="left", fill="y")
-            inner = tk.Frame(card, bg=CARD, padx=12, pady=8)
-            inner.pack(side="left", fill="both", expand=True)
-            tk.Label(inner, text="●  " + title.upper(), bg=CARD, fg=tint,
-                     font=("Segoe UI", 8, "bold")).pack(anchor="w", pady=(0, 4))
+            inner = tk.Frame(card, bg=CARD, padx=16, pady=10)
+            inner.pack(fill="both", expand=True)
+            cap_ = tk.Frame(inner, bg=CARD)
+            cap_.pack(anchor="w", pady=(0, 6))
+            tk.Label(cap_, text=f"{num[0]:02d}", bg=CARD, fg=ACCENT,
+                     font=(SERIF, 11, "bold")).pack(side="left")
+            tk.Label(cap_, text="   " + spaced(title), bg=CARD, fg=MUTED,
+                     font=("Segoe UI", 7, "bold")).pack(side="left")
             return inner
 
         # 1. номер акта
-        c = section("Акт №", TINTS["act"])
+        c = section("Акт №")
         self.act_no = tk.StringVar(value=data["act_no"])
         ttk.Entry(c, textvariable=self.act_no, width=14).pack(anchor="w")
 
         # 2. представители
-        c = section("Мы, нижеподписавшиеся — представители (выбор из списка «Подписанты»)",
-                    TINTS["reps"])
+        c = section("Мы, нижеподписавшиеся — представители")
         self.reps_frame = ttk.Frame(c, style="Card.TFrame")
         self.reps_frame.pack(fill="x")
         ttk.Button(c, text="＋ Добавить представителя", style="Link.TButton",
@@ -711,23 +722,23 @@ class App(tk.Tk):
         self.rep_draw()
 
         # 3. работы
-        c = section("К освидетельствованию предъявлены работы", TINTS["works"])
+        c = section("К освидетельствованию предъявлены работы")
         self.works = text_field(c, 2, data["works"])
         self.works.pack(fill="x")
 
-        c = section("Работы выполнены по проектной документации", TINTS["docs"])
+        c = section("Работы выполнены по проектной документации")
         self.docs = text_field(c, 2, data["docs"])
         self.docs.pack(fill="x")
 
         # 4. материалы
-        c = section("При выполнении работ применены", TINTS["mat"])
+        c = section("При выполнении работ применены")
         self.materials = text_field(c, 2, data["materials_text"])
         self.materials.pack(fill="x")
         ttk.Button(c, text="＋ Выбрать из базы материалов", style="Link.TButton",
                    command=self.open_materials).pack(anchor="w", pady=(2, 0))
 
         # 5. даты
-        c = section("Даты", TINTS["dates"])
+        c = section("Даты")
         dates = ttk.Frame(c, style="Card.TFrame")
         dates.pack(anchor="w")
         self.start = tk.StringVar(value=data["start"])
@@ -739,7 +750,7 @@ class App(tk.Tk):
         date_entry(dates, self.end, width=14).grid(row=1, column=1, padx=(12, 0))
 
         # 6. последующие работы
-        c = section("Разрешается производство последующих работ", TINTS["next"])
+        c = section("Разрешается производство последующих работ")
         self.next_works = text_field(c, 1, data["next_works"])
         self.next_works.pack(fill="x")
 
