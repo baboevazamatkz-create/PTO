@@ -4,13 +4,14 @@ import re
 import sys
 from pathlib import Path
 from docx import Document
-from docx.enum.text import WD_TAB_ALIGNMENT
+from docx.enum.text import WD_TAB_ALIGNMENT, WD_TAB_LEADER
+from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Pt
 from docx.text.paragraph import Paragraph
 
 FONT = "Times New Roman"
-SIZE, SMALL = Pt(11), Pt(9)
+SIZE, SMALL = Pt(10), Pt(8)
 
 MONTHS = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля",
           "августа", "сентября", "октября", "ноября", "декабря"]
@@ -56,6 +57,10 @@ def text_width(doc):
     return s.page_width - s.left_margin - s.right_margin
 
 
+def add_tab(p, pos, align, leader=WD_TAB_LEADER.SPACES):
+    p.paragraph_format.tab_stops.add_tab_stop(int(pos), align, leader)
+
+
 def right_tab(p, width):
     p.paragraph_format.tab_stops.clear_all()
     p.paragraph_format.tab_stops.add_tab_stop(width, WD_TAB_ALIGNMENT.RIGHT)
@@ -71,8 +76,14 @@ def apply_fonts(doc):
     st = doc.styles["Normal"]
     st.font.name, st.font.size = FONT, SIZE
     for p in doc.paragraphs:
-        size = SMALL if is_caption(p) else SIZE
+        cap = is_caption(p)
+        size = SMALL if cap else SIZE
+        pPr = p._p.pPr
+        if pPr is not None and pPr.find(qn("w:pBdr")) is not None:
+            pPr.remove(pPr.find(qn("w:pBdr")))      # линии-подчёркивания абзаца заменены подчёркиванием значения
         for r in p.runs:
+            if cap:
+                r.italic = True
             r.font.name = FONT
             r.font.size = size
             rf = r._r.get_or_add_rPr().rFonts
@@ -86,7 +97,7 @@ def apply_fonts(doc):
 def generate(data, out_path, template=None):
     doc = Document(str(template or base_dir() / "template.docx"))
     P = lambda prefix, start=0: doc.paragraphs[find(doc, prefix, start)]
-    I = {"i": True}
+    IU = {"i": True, "u": True}      # заполняемое значение: курсив + подчёркивание
 
     # --- строка «город … дата» (поля остаются как в шаблоне, выравнивание — по табуляции)
     p = doc.paragraphs[find(doc, "г. ")]
@@ -95,7 +106,15 @@ def generate(data, out_path, template=None):
     right_tab(p, text_width(doc))
 
     # --- номер акта
-    set_runs(P("АКТ"), [("АКТ № ", {"b": True}), (data["act_no"], {"b": True, "i": True})])
+    set_runs(P("АКТ"), [("АКТ № ", {"b": True}), (data["act_no"], {"b": True})])
+
+    # --- объект и организация: подчёркивается только значение после двоеточия
+    p = P("Объект:")
+    label, _, value = p.text.partition(": ")
+    set_runs(p, [(label + ": ", {}), (value, IU)])
+    p = P("произвели осмотр")
+    label, _, value = p.text.partition(": ")
+    set_runs(p, [(label + ": ", {"b": True}), (value.strip(), IU)])
 
     # --- представители (верх)
     reps = [r for r in data["reps"] if r.get("on", True)]
@@ -114,34 +133,46 @@ def generate(data, out_path, template=None):
             anchor = Paragraph(el, anchor._parent)
             if kind == "line":
                 who = " ".join(x for x in (r["org"], r["position"], r["name"]) if x)
-                set_runs(anchor, [(f'Представитель {r["role"]}: ', {"b": True}), (who, I)])
+                set_runs(anchor, [(f'Представитель {r["role"]}: ', {"b": True}), (who, IU)])
             else:
                 set_runs(anchor, [("(организация, должность, фамилия, инициалы)", {})])
 
     # --- работы, документация
     set_runs(P("К освидетельствованию"),
-             [("К освидетельствованию предъявлены работы: ", {}), (data["works"], I)])
+             [("К освидетельствованию предъявлены работы: ", {}), (data["works"], IU)])
     set_runs(P("Работы выполнены по"),
-             [("Работы выполнены по проектной документации: ", {}), (data["docs"], {"i": True, "u": True})])
+             [("Работы выполнены по проектной документации: ", {}), (data["docs"], IU)])
 
     # --- материалы
     set_runs(P("3. При выполнении"),
-             [("3. При выполнении работ применены: ", {}), (" ".join(data["materials"]), I)])
+             [("3. При выполнении работ применены: ", {}), (" ".join(data["materials"]), IU)])
+
+    # --- отклонения (значение подчёркивается)
+    i = find(doc, "4. При выполнении")
+    p = doc.paragraphs[i + 1]
+    set_runs(p, [(p.text.strip(), IU)])
 
     # --- даты
     i = find(doc, "Даты:")
     d1, m1, y1 = split_date(data["start"])
     d2, m2, y2 = split_date(data["end"])
     ps = doc.paragraphs
-    set_runs(ps[i], [("Даты: начала работ  ", {}), (f"«{d1}» {m1} {y1}г.", I)])
-    set_runs(ps[i + 1], [("\t                окончание работ ", {}), (f"«{d2}» {m2} {y2}г.", I)])
+    num_ref = ps[find(doc, "3. При выполнении")].paragraph_format
+    pf = ps[i].paragraph_format
+    numPr = ps[i]._p.pPr.find(qn("w:numPr"))
+    if numPr is not None:                       # автонумерация давала «1.» — пункт должен быть 5
+        ps[i]._p.pPr.remove(numPr)
+    pf.left_indent, pf.first_line_indent = num_ref.left_indent, num_ref.first_line_indent
+    set_runs(ps[i], [("5. Даты: начала работ  ", {}), (f"«{d1}» {m1} {y1}г.", IU)])
+    set_runs(ps[i + 1], [("\t                окончание работ ", {}), (f"«{d2}» {m2} {y2}г.", IU)])
 
     # --- последующие работы
     i = find(doc, "На основании изложенного")
     ps = doc.paragraphs
     set_runs(ps[i], [("На основании изложенного разрешается производство последующих работ "
                       "по устройству (монтажу)", {})])
-    set_runs(ps[i + 1], [(data["next_works"], {"i": True, "u": True})])
+    set_runs(ps[i + 1], [(data["next_works"], {"i": True})])
+    next_idx = i + 1                      # линия на всю ширину поля — рамкой абзаца (ниже)
 
     # --- подписи (низ)
     s = find(doc, "Представитель", i + 1)
@@ -151,26 +182,48 @@ def generate(data, out_path, template=None):
     proto_sigcap = copy.deepcopy(ps[s + 1]._p)
     for el in [ps[k]._p for k in range(s, len(ps) - 1)]:
         el.getparent().remove(el)
-    width = text_width(doc)
+    W = text_width(doc)
+    S0, S1 = W * 0.47, W * 0.72                  # начало и конец линии подписи
+    C1, C2 = (S0 + S1) / 2, (S1 + W) / 2         # центры подстрочников
     anchor = None
+
+    def new_par(kind_proto):
+        nonlocal anchor
+        el = copy.deepcopy(kind_proto)
+        if anchor is None:
+            last._p.addprevious(el)
+        else:
+            anchor._p.addnext(el)
+        anchor = Paragraph(el, last._parent)
+        anchor.alignment = 0
+        anchor.paragraph_format.tab_stops.clear_all()
+        return anchor
+
     for r in reps:
-        for proto, kind in ((proto_sig, "sig"), (proto_sigcap, "cap"), (proto_sigcap, "gap")):
-            el = copy.deepcopy(proto)
-            if anchor is None:
-                last._p.addprevious(el)
-            else:
-                anchor._p.addnext(el)
-            anchor = Paragraph(el, last._parent)
-            anchor.alignment = 0
-            right_tab(anchor, width)
-            if kind == "sig":
-                org = (" " + r["org"]) if r["org"] else ""
-                set_runs(anchor, [(f'Представитель {r["role"]}', {}), (org, I),
-                                  ("\t_______________ / ", {}), (r["name"], I)])
-            elif kind == "cap":
-                set_runs(anchor, [("\t(подпись)            (расшифровка подписи)", {})])
-            else:
-                set_runs(anchor, [("", {})])
+        label = f'Представитель {r["role"]}' + (f' {r["org"]}' if r["org"] else "")
+        if len(label) > 46:                       # длинная подпись — отдельной строкой
+            set_runs(new_par(proto_sig), [(label, {})])
+            p = new_par(proto_sig)
+            parts = []
+        else:
+            p = new_par(proto_sig)
+            parts = [(label, {})]
+        add_tab(p, S0, WD_TAB_ALIGNMENT.LEFT)
+        add_tab(p, S1, WD_TAB_ALIGNMENT.LEFT, WD_TAB_LEADER.LINES)
+        add_tab(p, W, WD_TAB_ALIGNMENT.RIGHT, WD_TAB_LEADER.LINES)
+        set_runs(p, parts + [("\t\t/ ", {}), (r["name"], {"u": True}), ("\t", {"u": True})])
+        p = new_par(proto_sigcap)
+        add_tab(p, C1, WD_TAB_ALIGNMENT.CENTER)
+        add_tab(p, C2, WD_TAB_ALIGNMENT.CENTER)
+        set_runs(p, [("\t(подпись)\t(расшифровка подписи)", {})])
+        set_runs(new_par(proto_sigcap), [("", {})])
 
     apply_fonts(doc)
+    p = doc.paragraphs[next_idx]
+    bdr = OxmlElement("w:pBdr")
+    bottom = OxmlElement("w:bottom")
+    for k, v in (("val", "single"), ("sz", "4"), ("space", "1"), ("color", "auto")):
+        bottom.set(qn("w:" + k), v)
+    bdr.append(bottom)
+    p._p.get_or_add_pPr().append(bdr)
     doc.save(str(out_path))
