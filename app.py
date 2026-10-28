@@ -3,7 +3,7 @@ import json
 import sys
 import tkinter as tk
 from pathlib import Path
-from tkinter import ttk, filedialog, messagebox, simpledialog
+from tkinter import ttk, filedialog, messagebox, simpledialog, font as tkfont
 
 from generator import generate
 
@@ -14,19 +14,17 @@ LAST_FILE = APP_DIR / "last_project.json"
 ROLES = ["Заказчика", "подрядчика", "технического надзора", "авторского надзора",
          "Генподрядной организации", "субподрядчика"]
 
+BG, CARD, FIELD, LINE = "#FFFFFF", "#FFFFFF", "#F4F5F7", "#E3E6EA"
+TEXT, MUTED, ACCENT, ACCENT_D = "#1F2933", "#7B8794", "#2F6FEB", "#2459C4"
+
 DEFAULT = {
-    "act_no": "370", "city": "г. Алматы", "act_date": "",
-    "object": "Строительство спортивно-оздоровительного комплекса ...",
-    "contractor_org": "ТОО «АКВАСЕРВИС»",
-    "works": "", "docs": "", "materials": [],
-    "deviations_on": False, "deviations": "Отсутствуют",
+    "act_no": "", "works": "", "docs": "", "materials_sel": [],
     "start": "", "end": "", "next_works": "",
     "reps": [
-        {"on": True, "role": "Заказчика", "org": "ТОО «FORTUNATA»", "position": "", "name": "Тлеуханов Н.Б."},
-        {"on": True, "role": "подрядчика", "org": "ТОО «АКВАСЕРВИС»", "position": "ВрИО руководителя строительства", "name": "Соловьев Е.В."},
-        {"on": True, "role": "технического надзора", "org": "«ИП Орман»", "position": "Инженер по техническому надзору", "name": "Асанбаев К.Б."},
-        {"on": True, "role": "авторского надзора", "org": "TOO «Vitality Group»", "position": "", "name": "Оспанов Н.А."},
-        {"on": True, "role": "Генподрядной организации", "org": "ТОО «Modulic construction»", "position": "", "name": "Соломко М.Б."},
+        {"on": True, "role": "Заказчика", "org": "", "position": "", "name": ""},
+        {"on": True, "role": "подрядчика", "org": "", "position": "", "name": ""},
+        {"on": True, "role": "технического надзора", "org": "", "position": "", "name": ""},
+        {"on": True, "role": "авторского надзора", "org": "", "position": "", "name": ""},
     ],
 }
 
@@ -42,214 +40,162 @@ def save_json(path, obj):
     Path(path).write_text(json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-class App(tk.Tk):
-    def __init__(self):
-        super().__init__()
-        self.title("Акты скрытых работ")
-        self.geometry("900x680")
-        self.data = {**DEFAULT, **load_json(LAST_FILE, {})}
-        self.mats = load_json(MAT_FILE, [])          # база материалов
-        self.reps = [dict(r) for r in self.data["reps"]]
-        self.vars = {}
+def setup_style(root):
+    fam = "Segoe UI" if "Segoe UI" in tkfont.families() else "DejaVu Sans"
+    for name in ("TkDefaultFont", "TkTextFont", "TkMenuFont", "TkHeadingFont"):
+        tkfont.nametofont(name).configure(family=fam, size=10)
+    root.option_add("*Font", (fam, 10))
+    root.configure(bg=BG)
+    s = ttk.Style(root)
+    s.theme_use("clam")
+    s.configure(".", background=BG, foreground=TEXT, font=(fam, 10), borderwidth=0)
+    s.configure("TFrame", background=BG)
+    s.configure("TLabel", background=BG, foreground=TEXT)
+    s.configure("Muted.TLabel", foreground=MUTED, font=(fam, 9))
+    s.configure("H.TLabel", font=(fam, 9, "bold"), foreground=MUTED)
+    s.title_font = tkfont.Font(family=fam, size=15, weight="bold")
+    s.configure("Title.TLabel", font=s.title_font)
+    s.configure("TEntry", fieldbackground=FIELD, bordercolor=LINE, lightcolor=LINE,
+                darkcolor=LINE, padding=6, relief="flat")
+    s.map("TEntry", bordercolor=[("focus", ACCENT)], lightcolor=[("focus", ACCENT)],
+          darkcolor=[("focus", ACCENT)])
+    s.configure("TCombobox", fieldbackground=FIELD, background=FIELD, bordercolor=LINE,
+                lightcolor=LINE, darkcolor=LINE, padding=6, arrowcolor=MUTED)
+    s.map("TCombobox", bordercolor=[("focus", ACCENT)], fieldbackground=[("readonly", FIELD)])
+    s.configure("TCheckbutton", background=BG, focuscolor=BG)
+    s.map("TCheckbutton", background=[("active", BG)])
+    s.configure("TButton", background=FIELD, foreground=TEXT, padding=(12, 7), relief="flat",
+                focuscolor=FIELD)
+    s.map("TButton", background=[("active", LINE)])
+    s.configure("Accent.TButton", background=ACCENT, foreground="#FFFFFF", padding=(18, 9),
+                font=(fam, 10, "bold"))
+    s.map("Accent.TButton", background=[("active", ACCENT_D)])
+    s.configure("Link.TButton", background=BG, foreground=ACCENT, padding=(4, 6))
+    s.map("Link.TButton", background=[("active", BG)], foreground=[("active", ACCENT_D)])
+    s.configure("Icon.TButton", background=BG, foreground=MUTED, padding=(5, 3))
+    s.map("Icon.TButton", background=[("active", FIELD)], foreground=[("active", TEXT)])
+    s.configure("Treeview", background=BG, fieldbackground=BG, rowheight=30, bordercolor=LINE,
+                borderwidth=0)
+    s.configure("Treeview.Heading", background=BG, foreground=MUTED, font=(fam, 9, "bold"),
+                relief="flat")
+    s.map("Treeview", background=[("selected", "#E8F0FE")], foreground=[("selected", TEXT)])
+    s.configure("Vertical.TScrollbar", background=LINE, troughcolor=BG, bordercolor=BG,
+                arrowsize=0, relief="flat")
+    return fam
 
-        bar = ttk.Frame(self)
-        bar.pack(fill="x", padx=8, pady=6)
-        ttk.Button(bar, text="Открыть проект…", command=self.open_project).pack(side="left")
-        ttk.Button(bar, text="Сохранить проект…", command=self.save_project).pack(side="left", padx=4)
-        ttk.Button(bar, text="Сформировать акт (Word)", command=self.make).pack(side="right")
 
-        nb = ttk.Notebook(self)
-        nb.pack(fill="both", expand=True, padx=8, pady=4)
-        self.tab_main(nb)
-        self.tab_reps(nb)
-        self.tab_mats(nb)
-        self.protocol("WM_DELETE_WINDOW", self.on_close)
+def text_field(parent, height, value=""):
+    t = tk.Text(parent, height=height, wrap="word", relief="flat", bg=FIELD, fg=TEXT,
+                insertbackground=TEXT, padx=8, pady=6, highlightthickness=1,
+                highlightbackground=LINE, highlightcolor=ACCENT, undo=True)
+    t.insert("1.0", value)
+    return t
 
-    # ---------- вкладка «Основное»
-    def tab_main(self, nb):
-        f = ttk.Frame(nb, padding=8)
-        nb.add(f, text="Основное")
-        f.columnconfigure(1, weight=1)
-        rows = [("act_no", "Номер акта", 1), ("city", "Город", 1),
-                ("act_date", "Дата акта (ДД.ММ.ГГГГ)", 1),
-                ("object", "Объект", 3), ("contractor_org", "СМО (выполнившая работы)", 1),
-                ("works", "Предъявленные работы", 4), ("docs", "Работы выполнены по проектной документации", 3),
-                ("start", "Начало работ (ДД.ММ.ГГГГ)", 1), ("end", "Окончание работ (ДД.ММ.ГГГГ)", 1),
-                ("next_works", "Последующие работы", 3)]
-        r = 0
-        for key, label, h in rows:
-            ttk.Label(f, text=label).grid(row=r, column=0, sticky="nw", pady=3, padx=(0, 8))
-            if h == 1:
-                v = tk.StringVar(value=self.data[key])
-                ttk.Entry(f, textvariable=v).grid(row=r, column=1, sticky="ew", pady=3)
-                self.vars[key] = v
-            else:
-                t = tk.Text(f, height=h, wrap="word")
-                t.insert("1.0", self.data[key])
-                t.grid(row=r, column=1, sticky="ew", pady=3)
-                self.vars[key] = t
-            r += 1
-        self.dev_on = tk.BooleanVar(value=self.data["deviations_on"])
-        ttk.Checkbutton(f, text="Есть отклонения от проекта (иначе «Отсутствуют»)",
-                        variable=self.dev_on).grid(row=r, column=0, columnspan=2, sticky="w", pady=3)
-        r += 1
-        self.dev_text = tk.Text(f, height=2, wrap="word")
-        self.dev_text.insert("1.0", self.data["deviations"])
-        self.dev_text.grid(row=r, column=1, sticky="ew")
-        ttk.Label(f, text="Текст отклонений").grid(row=r, column=0, sticky="nw")
 
-    # ---------- вкладка «Представители»
-    def tab_reps(self, nb):
-        f = ttk.Frame(nb, padding=8)
-        nb.add(f, text="Представители")
-        cols = ("on", "role", "org", "position", "name")
-        self.tree = ttk.Treeview(f, columns=cols, show="headings", height=8, selectmode="browse")
-        for c, t, w in (("on", "Вкл", 40), ("role", "Роль", 150), ("org", "Организация", 200),
-                        ("position", "Должность", 200), ("name", "Ф.И.О.", 150)):
-            self.tree.heading(c, text=t)
-            self.tree.column(c, width=w)
-        self.tree.pack(fill="x")
-        self.tree.bind("<<TreeviewSelect>>", self.rep_select)
-        self.tree.bind("<Double-1>", self.rep_toggle)
+class MaterialsDialog(tk.Toplevel):
+    """Окно выбора материалов из базы."""
 
-        form = ttk.LabelFrame(f, text="Выбранный представитель", padding=8)
-        form.pack(fill="x", pady=8)
-        form.columnconfigure(1, weight=1)
-        self.rv = {k: tk.StringVar() for k in ("role", "org", "position", "name")}
-        for i, (k, t) in enumerate((("role", "Роль"), ("org", "Организация"),
-                                    ("position", "Должность"), ("name", "Ф.И.О. (Иванов И.И.)"))):
-            ttk.Label(form, text=t).grid(row=i, column=0, sticky="w", pady=2, padx=(0, 8))
-            if k == "role":
-                ttk.Combobox(form, textvariable=self.rv[k], values=ROLES).grid(row=i, column=1, sticky="ew")
-            else:
-                ttk.Entry(form, textvariable=self.rv[k]).grid(row=i, column=1, sticky="ew")
-        b = ttk.Frame(f)
-        b.pack(fill="x")
-        for t, c in (("Добавить", self.rep_add), ("Применить к выбранному", self.rep_apply),
-                     ("Вкл/Выкл", self.rep_toggle), ("Удалить", self.rep_del),
-                     ("↑", lambda: self.rep_move(-1)), ("↓", lambda: self.rep_move(1))):
-            ttk.Button(b, text=t, command=c).pack(side="left", padx=2)
-        ttk.Label(f, text="Порядок и состав верхнего списка и блока подписей берётся отсюда. "
-                          "Двойной клик по строке — включить/отключить.",
-                  foreground="gray").pack(anchor="w", pady=6)
-        self.rep_refresh()
+    def __init__(self, app):
+        super().__init__(app)
+        self.app = app
+        self.title("Материалы")
+        self.configure(bg=BG)
+        self.geometry("820x520")
+        self.transient(app)
+        self.grab_set()
+        top = ttk.Frame(self, padding=(16, 14, 16, 4))
+        top.pack(fill="x")
+        tk.Label(top, text="База материалов", bg=BG, fg=TEXT, font=("Segoe UI", 15, "bold")).pack(side="left")
+        self.q = tk.StringVar()
+        self.q.trace_add("write", lambda *_: self.refresh())
+        ttk.Entry(top, textvariable=self.q, width=28).pack(side="right")
+        ttk.Label(top, text="Поиск", style="Muted.TLabel").pack(side="right", padx=8)
+        ttk.Label(self, text="Нажмите на строку, чтобы отметить материал для акта.",
+                  style="Muted.TLabel").pack(anchor="w", padx=16)
+        mid = ttk.Frame(self, padding=(16, 8))
+        mid.pack(fill="both", expand=True)
+        self.tree = ttk.Treeview(mid, columns=("on", "name", "cert"), show="headings",
+                                 selectmode="browse")
+        for c, t, w, st in (("on", "", 40, False), ("name", "Материал", 420, True),
+                            ("cert", "Сертификат №", 200, False)):
+            self.tree.heading(c, text=t, anchor="w")
+            self.tree.column(c, width=w, stretch=st, anchor="w")
+        sb = ttk.Scrollbar(mid, command=self.tree.yview)
+        self.tree.configure(yscrollcommand=sb.set)
+        self.tree.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        self.tree.bind("<ButtonRelease-1>", self.toggle)
+        bar = ttk.Frame(self, padding=(16, 4, 16, 14))
+        bar.pack(fill="x")
+        for t, c in (("Добавить", self.add), ("Изменить", self.edit), ("Удалить", self.delete),
+                     ("Импорт из файла", self.imp), ("Снять все", self.clear)):
+            ttk.Button(bar, text=t, command=c).pack(side="left", padx=(0, 6))
+        ttk.Button(bar, text="Готово", style="Accent.TButton", command=self.destroy).pack(side="right")
+        self.refresh()
 
-    def rep_refresh(self, sel=None):
+    def refresh(self):
+        q = self.q.get().strip().lower()
         self.tree.delete(*self.tree.get_children())
-        for i, r in enumerate(self.reps):
-            self.tree.insert("", "end", iid=str(i), values=("✔" if r["on"] else "", r["role"],
-                                                            r["org"], r["position"], r["name"]))
-        if sel is not None and 0 <= sel < len(self.reps):
-            self.tree.selection_set(str(sel))
+        for i, m in enumerate(self.app.mats):
+            if q and q not in (m["name"] + m["cert"]).lower():
+                continue
+            self.tree.insert("", "end", iid=str(i), values=(
+                "✔" if m["name"] in self.app.chosen else "", m["name"], m["cert"]))
+        save_json(MAT_FILE, self.app.mats)
+        self.app.update_mat_summary()
 
-    def rep_idx(self):
+    def cur(self):
         s = self.tree.selection()
         return int(s[0]) if s else None
 
-    def rep_select(self, _=None):
-        i = self.rep_idx()
+    def toggle(self, ev):
+        if self.tree.identify_region(ev.x, ev.y) != "cell":
+            return
+        i = self.cur()
         if i is not None:
-            for k in self.rv:
-                self.rv[k].set(self.reps[i][k])
+            self.app.chosen ^= {self.app.mats[i]["name"]}
+            self.refresh()
+            self.tree.selection_set(str(i))
 
-    def rep_add(self):
-        self.reps.append({"on": True, **{k: v.get() for k, v in self.rv.items()}})
-        self.rep_refresh(len(self.reps) - 1)
-
-    def rep_apply(self):
-        i = self.rep_idx()
-        if i is not None:
-            self.reps[i].update({k: v.get() for k, v in self.rv.items()})
-            self.rep_refresh(i)
-
-    def rep_toggle(self, _=None):
-        i = self.rep_idx()
-        if i is not None:
-            self.reps[i]["on"] = not self.reps[i]["on"]
-            self.rep_refresh(i)
-
-    def rep_del(self):
-        i = self.rep_idx()
-        if i is not None:
-            del self.reps[i]
-            self.rep_refresh(min(i, len(self.reps) - 1))
-
-    def rep_move(self, d):
-        i = self.rep_idx()
-        if i is not None and 0 <= i + d < len(self.reps):
-            self.reps[i], self.reps[i + d] = self.reps[i + d], self.reps[i]
-            self.rep_refresh(i + d)
-
-    # ---------- вкладка «Материалы»
-    def tab_mats(self, nb):
-        f = ttk.Frame(nb, padding=8)
-        nb.add(f, text="Материалы")
-        ttk.Label(f, text="База материалов. Двойной клик — отметить для акта (✔). "
-                          "Порядок отметки не важен, в акт идут сверху вниз.").pack(anchor="w")
-        self.mtree = ttk.Treeview(f, columns=("on", "name", "cert"), show="headings",
-                                  height=14, selectmode="browse")
-        for c, t, w in (("on", "В акт", 50), ("name", "Материал", 450), ("cert", "Сертификат №", 200)):
-            self.mtree.heading(c, text=t)
-            self.mtree.column(c, width=w)
-        self.mtree.pack(fill="both", expand=True, pady=6)
-        self.mtree.bind("<Double-1>", self.mat_toggle)
-        self.chosen = set(self.data["materials_sel"]) if "materials_sel" in self.data else set()
-        b = ttk.Frame(f)
-        b.pack(fill="x")
-        for t, c in (("Добавить", self.mat_add), ("Изменить", self.mat_edit), ("Удалить", self.mat_del),
-                     ("Импорт из файла…", self.mat_import), ("Снять все отметки", self.mat_clear)):
-            ttk.Button(b, text=t, command=c).pack(side="left", padx=2)
-        self.mat_refresh()
-
-    def mat_refresh(self):
-        self.mtree.delete(*self.mtree.get_children())
-        for i, m in enumerate(self.mats):
-            self.mtree.insert("", "end", iid=str(i),
-                              values=("✔" if m["name"] in self.chosen else "", m["name"], m["cert"]))
-        save_json(MAT_FILE, self.mats)
-
-    def mat_sel(self):
-        s = self.mtree.selection()
-        return int(s[0]) if s else None
-
-    def mat_toggle(self, _=None):
-        i = self.mat_sel()
-        if i is not None:
-            n = self.mats[i]["name"]
-            self.chosen ^= {n}
-            self.mat_refresh()
-
-    def mat_ask(self, name="", cert=""):
+    def ask(self, name="", cert=""):
         n = simpledialog.askstring("Материал", "Наименование:", initialvalue=name, parent=self)
         if not n:
             return None
         c = simpledialog.askstring("Материал", "Номер сертификата соответствия:",
                                    initialvalue=cert, parent=self)
-        return {"name": n, "cert": c or ""}
+        return {"name": n.strip(), "cert": (c or "").strip()}
 
-    def mat_add(self):
-        m = self.mat_ask()
+    def add(self):
+        m = self.ask()
         if m:
-            self.mats.append(m)
-            self.mat_refresh()
+            self.app.mats.append(m)
+            self.refresh()
 
-    def mat_edit(self):
-        i = self.mat_sel()
+    def edit(self):
+        i = self.cur()
         if i is not None:
-            m = self.mat_ask(**self.mats[i])
+            old = self.app.mats[i]
+            m = self.ask(**old)
             if m:
-                self.chosen.discard(self.mats[i]["name"])
-                self.mats[i] = m
-                self.mat_refresh()
+                if old["name"] in self.app.chosen:
+                    self.app.chosen.discard(old["name"])
+                    self.app.chosen.add(m["name"])
+                self.app.mats[i] = m
+                self.refresh()
 
-    def mat_del(self):
-        i = self.mat_sel()
+    def delete(self):
+        i = self.cur()
         if i is not None:
-            del self.mats[i]
-            self.mat_refresh()
+            self.app.chosen.discard(self.app.mats[i]["name"])
+            del self.app.mats[i]
+            self.refresh()
 
-    def mat_import(self):
-        p = filedialog.askopenfilename(title="Текстовый файл: Наименование;Сертификат",
+    def clear(self):
+        self.app.chosen.clear()
+        self.refresh()
+
+    def imp(self):
+        p = filedialog.askopenfilename(parent=self, title="Файл: Наименование;Сертификат",
                                        filetypes=[("Текст/CSV", "*.txt *.csv"), ("Все", "*.*")])
         if not p:
             return
@@ -260,44 +206,205 @@ class App(tk.Tk):
             text = raw.decode("cp1251")
         n = 0
         for line in text.splitlines():
-            if not line.strip():
-                continue
-            name, _, cert = line.partition(";")
-            self.mats.append({"name": name.strip(), "cert": cert.strip()})
-            n += 1
-        self.mat_refresh()
-        messagebox.showinfo("Импорт", f"Добавлено: {n}")
+            if line.strip():
+                name, _, cert = line.partition(";")
+                self.app.mats.append({"name": name.strip(), "cert": cert.strip()})
+                n += 1
+        self.refresh()
+        messagebox.showinfo("Импорт", f"Добавлено: {n}", parent=self)
 
-    def mat_clear(self):
-        self.chosen.clear()
-        self.mat_refresh()
+
+class App(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title("Акты скрытых работ")
+        self.geometry("920x780")
+        self.minsize(760, 560)
+        setup_style(self)
+        self.mats = load_json(MAT_FILE, [])
+        data = {**DEFAULT, **load_json(LAST_FILE, {})}
+        self.chosen = set(data["materials_sel"])
+        self.rows = []          # [{vars..., frame}]
+        self.reps_data = [dict(r) for r in data["reps"]]
+        self.build(data)
+        self.protocol("WM_DELETE_WINDOW", self.on_close)
+
+    # ---------- построение окна
+    def build(self, data):
+        head = ttk.Frame(self, padding=(24, 18, 24, 8))
+        head.pack(fill="x")
+        tk.Label(head, text="Акт освидетельствования скрытых работ", bg=BG, fg=TEXT,
+                 font=("Segoe UI", 15, "bold")).pack(side="left")
+        ttk.Button(head, text="Сохранить проект", command=self.save_project).pack(side="right")
+        ttk.Button(head, text="Открыть проект", command=self.open_project).pack(side="right", padx=6)
+
+        foot = ttk.Frame(self, padding=(24, 10, 24, 16))
+        foot.pack(side="bottom", fill="x")
+        ttk.Frame(self, height=1, style="TFrame").pack(side="bottom", fill="x")
+        ttk.Button(foot, text="Сформировать акт (Word)", style="Accent.TButton",
+                   command=self.make).pack(side="right")
+
+        wrap = ttk.Frame(self)
+        wrap.pack(fill="both", expand=True)
+        cv = tk.Canvas(wrap, bg=BG, highlightthickness=0)
+        sb = ttk.Scrollbar(wrap, orient="vertical", command=cv.yview)
+        cv.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+        cv.pack(side="left", fill="both", expand=True)
+        body = ttk.Frame(cv, padding=(24, 4, 24, 16))
+        win = cv.create_window((0, 0), window=body, anchor="nw")
+        body.bind("<Configure>", lambda e: cv.configure(scrollregion=cv.bbox("all")))
+        cv.bind("<Configure>", lambda e: cv.itemconfigure(win, width=e.width))
+        self.bind_all("<MouseWheel>", lambda e: self.focus_get().winfo_class() != "Text"
+                      and cv.yview_scroll(-1 * (e.delta // 120), "units"))
+        body.columnconfigure(0, weight=1)
+
+        r = 0
+
+        def section(title):
+            nonlocal r
+            ttk.Label(body, text=title.upper(), style="H.TLabel").grid(
+                row=r, column=0, sticky="w", pady=(18, 6))
+            r += 1
+
+        # 1. номер акта
+        section("Акт №")
+        self.act_no = tk.StringVar(value=data["act_no"])
+        ttk.Entry(body, textvariable=self.act_no, width=14).grid(row=r, column=0, sticky="w")
+        r += 1
+
+        # 2. представители
+        section("Мы, нижеподписавшиеся — представители")
+        self.reps_frame = ttk.Frame(body)
+        self.reps_frame.grid(row=r, column=0, sticky="ew")
+        r += 1
+        ttk.Button(body, text="＋ Добавить представителя", style="Link.TButton",
+                   command=self.rep_add).grid(row=r, column=0, sticky="w", pady=(4, 0))
+        r += 1
+        self.rep_draw()
+
+        # 3. работы
+        section("К освидетельствованию предъявлены работы")
+        self.works = text_field(body, 3, data["works"])
+        self.works.grid(row=r, column=0, sticky="ew")
+        r += 1
+
+        section("Работы выполнены по проектной документации")
+        self.docs = text_field(body, 3, data["docs"])
+        self.docs.grid(row=r, column=0, sticky="ew")
+        r += 1
+
+        # 4. материалы
+        section("При выполнении работ применены")
+        self.mat_box = tk.Text(body, height=3, wrap="word", relief="flat", bg=FIELD, fg=TEXT,
+                               padx=8, pady=6, cursor="hand2", highlightthickness=1,
+                               highlightbackground=LINE, state="disabled")
+        self.mat_box.grid(row=r, column=0, sticky="ew")
+        self.mat_box.bind("<Button-1>", lambda e: self.open_materials())
+        r += 1
+        self.update_mat_summary()
+
+        # 5. даты
+        section("Даты (ДД.ММ.ГГГГ)")
+        dates = ttk.Frame(body)
+        dates.grid(row=r, column=0, sticky="w")
+        self.start = tk.StringVar(value=data["start"])
+        self.end = tk.StringVar(value=data["end"])
+        ttk.Label(dates, text="начало", style="Muted.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(dates, text="окончание", style="Muted.TLabel").grid(row=0, column=1, sticky="w", padx=(12, 0))
+        ttk.Entry(dates, textvariable=self.start, width=14).grid(row=1, column=0)
+        ttk.Entry(dates, textvariable=self.end, width=14).grid(row=1, column=1, padx=(12, 0))
+        r += 1
+
+        # 6. последующие работы
+        section("Разрешается производство последующих работ")
+        self.next_works = text_field(body, 2, data["next_works"])
+        self.next_works.grid(row=r, column=0, sticky="ew")
+
+    # ---------- представители
+    def rep_draw(self):
+        for w in self.reps_frame.winfo_children():
+            w.destroy()
+        self.rows = []
+        f = self.reps_frame
+        f.columnconfigure(2, weight=2)
+        f.columnconfigure(3, weight=2)
+        f.columnconfigure(4, weight=2)
+        for c, t in ((1, "Роль"), (2, "Организация"), (3, "Должность"), (4, "Ф.И.О.")):
+            ttk.Label(f, text=t, style="Muted.TLabel").grid(row=0, column=c, sticky="w", padx=3)
+        for i, rep in enumerate(self.reps_data):
+            v = {"on": tk.BooleanVar(value=rep["on"]), "role": tk.StringVar(value=rep["role"]),
+                 "org": tk.StringVar(value=rep["org"]), "position": tk.StringVar(value=rep["position"]),
+                 "name": tk.StringVar(value=rep["name"])}
+            self.rows.append(v)
+            g = i + 1
+            ttk.Checkbutton(f, variable=v["on"]).grid(row=g, column=0, padx=(0, 4), pady=3)
+            ttk.Combobox(f, textvariable=v["role"], values=ROLES, width=22).grid(
+                row=g, column=1, padx=3, pady=3, sticky="ew")
+            for c, k in ((2, "org"), (3, "position"), (4, "name")):
+                ttk.Entry(f, textvariable=v[k]).grid(row=g, column=c, padx=3, pady=3, sticky="ew")
+            ttk.Button(f, text="↑", width=2, style="Icon.TButton",
+                       command=lambda i=i: self.rep_move(i, -1)).grid(row=g, column=5)
+            ttk.Button(f, text="↓", width=2, style="Icon.TButton",
+                       command=lambda i=i: self.rep_move(i, 1)).grid(row=g, column=6)
+            ttk.Button(f, text="✕", width=2, style="Icon.TButton",
+                       command=lambda i=i: self.rep_del(i)).grid(row=g, column=7)
+
+    def rep_read(self):
+        self.reps_data = [{"on": v["on"].get(), **{k: v[k].get().strip() for k in
+                           ("role", "org", "position", "name")}} for v in self.rows]
+
+    def rep_add(self):
+        self.rep_read()
+        self.reps_data.append({"on": True, "role": "", "org": "", "position": "", "name": ""})
+        self.rep_draw()
+
+    def rep_del(self, i):
+        self.rep_read()
+        del self.reps_data[i]
+        self.rep_draw()
+
+    def rep_move(self, i, d):
+        self.rep_read()
+        j = i + d
+        if 0 <= j < len(self.reps_data):
+            self.reps_data[i], self.reps_data[j] = self.reps_data[j], self.reps_data[i]
+            self.rep_draw()
+
+    # ---------- материалы
+    def update_mat_summary(self):
+        names = [m["name"] for m in self.mats if m["name"] in self.chosen]
+        text = "\n".join("• " + n for n in names) if names else "Нажмите, чтобы выбрать материалы…"
+        self.mat_box.configure(state="normal", fg=TEXT if names else MUTED,
+                               height=max(3, min(8, len(names) + 1)))
+        self.mat_box.delete("1.0", "end")
+        self.mat_box.insert("1.0", text)
+        self.mat_box.configure(state="disabled")
+
+    def open_materials(self):
+        MaterialsDialog(self)
 
     # ---------- данные
     def collect(self):
-        d = {}
-        for k, v in self.vars.items():
-            d[k] = v.get("1.0", "end").strip() if isinstance(v, tk.Text) else v.get().strip()
-        d["deviations_on"] = self.dev_on.get()
-        d["deviations"] = self.dev_text.get("1.0", "end").strip()
-        d["reps"] = [dict(r) for r in self.reps]
-        d["materials_sel"] = [m["name"] for m in self.mats if m["name"] in self.chosen]
-        return d
+        self.rep_read()
+        g = lambda t: t.get("1.0", "end").strip()
+        return {"act_no": self.act_no.get().strip(), "works": g(self.works), "docs": g(self.docs),
+                "materials_sel": [m["name"] for m in self.mats if m["name"] in self.chosen],
+                "start": self.start.get().strip(), "end": self.end.get().strip(),
+                "next_works": g(self.next_works), "reps": self.reps_data}
 
     def apply(self, d):
         d = {**DEFAULT, **d}
-        for k, v in self.vars.items():
-            if isinstance(v, tk.Text):
-                v.delete("1.0", "end")
-                v.insert("1.0", d[k])
-            else:
-                v.set(d[k])
-        self.dev_on.set(d["deviations_on"])
-        self.dev_text.delete("1.0", "end")
-        self.dev_text.insert("1.0", d["deviations"])
-        self.reps = [dict(r) for r in d["reps"]]
-        self.chosen = set(d.get("materials_sel", []))
-        self.rep_refresh()
-        self.mat_refresh()
+        self.act_no.set(d["act_no"])
+        for t, k in ((self.works, "works"), (self.docs, "docs"), (self.next_works, "next_works")):
+            t.delete("1.0", "end")
+            t.insert("1.0", d[k])
+        self.start.set(d["start"])
+        self.end.set(d["end"])
+        self.chosen = set(d["materials_sel"])
+        self.reps_data = [dict(r) for r in d["reps"]]
+        self.rep_draw()
+        self.update_mat_summary()
 
     def open_project(self):
         p = filedialog.askopenfilename(filetypes=[("Проект акта", "*.json")])
@@ -306,7 +413,7 @@ class App(tk.Tk):
 
     def save_project(self):
         p = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("Проект акта", "*.json")],
-                                         initialfile=f"akt_{self.vars['act_no'].get()}.json")
+                                         initialfile=f"akt_{self.act_no.get()}.json")
         if p:
             save_json(p, self.collect())
 
