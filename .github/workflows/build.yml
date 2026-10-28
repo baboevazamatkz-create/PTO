@@ -9,11 +9,22 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: {python-version: "3.12"}
-      - run: pip install python-docx pyinstaller
-      - run: pyinstaller --noconsole --onefile --name akt --icon akt.ico --add-data "template.docx;." --add-data "akt.ico;." app.py
+      - run: pip install python-docx nuitka
+      # Nuitka компилирует в машинный код — у антивирусов меньше ложных срабатываний, чем у PyInstaller
+      - run: >
+          python -m nuitka --onefile --assume-yes-for-downloads --msvc=latest
+          --windows-console-mode=disable --enable-plugin=tk-inter
+          --windows-icon-from-ico=akt.ico
+          --include-package-data=docx
+          --include-data-files=template.docx=template.docx
+          --include-data-files=akt.ico=akt.ico
+          --company-name="PTO" --product-name="Akty skrytyh rabot"
+          --file-version=1.0.0.0 --product-version=1.0.0.0
+          --file-description="Akty osvidetelstvovaniya skrytyh rabot"
+          --output-dir=dist --output-filename=akt.exe app.py
       - uses: actions/upload-artifact@v4
-        with: {name: akt-windows, path: dist}
-      - run: Compress-Archive -Path dist\* -DestinationPath akt-windows.zip
+        with: {name: akt-windows, path: dist/akt.exe}
+      - run: Compress-Archive -Path dist\akt.exe -DestinationPath akt-windows.zip
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
