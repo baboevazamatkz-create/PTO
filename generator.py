@@ -85,11 +85,14 @@ def to_edge(p, width):
     правого поля и не зависит от позиций табуляции абзаца. Обычная правая табуляция на самом
     поле заставляла Word бесконечно перекомпоновывать страницу при печати.
     """
+    p.paragraph_format.right_indent = 0          # правый отступ шаблона укорачивал линию
     ptab(p, underline=True)
 
 
 def bottom_line(p):
-    """Линия на всю ширину — нижняя граница абзаца."""
+    """Линия на всю ширину — нижняя граница абзаца (без отступов, от поля до поля)."""
+    pf = p.paragraph_format
+    pf.left_indent = pf.right_indent = pf.first_line_indent = 0
     bdr = OxmlElement("w:pBdr")
     bottom = OxmlElement("w:bottom")
     for k, v in (("val", "single"), ("sz", "4"), ("space", "1"), ("color", "auto")):
@@ -116,6 +119,13 @@ def apply_fonts(doc):
     st.font.name, st.font.size = FONT, SIZE
     for p in doc.paragraphs:
         cap = is_caption(p)
+        if cap and "\t" not in p.text:
+            # подстрочник шаблона выравнивался пробелами и отступами — ставим ровно по центру строки
+            set_runs(p, [(p.text.strip(), {})])
+            pf = p.paragraph_format
+            pf.left_indent = pf.right_indent = pf.first_line_indent = 0
+            pf.tab_stops.clear_all()
+            p.alignment = 1
         head = p.text.strip().lower().startswith(HEADER_STARTS)
         size = SMALL if cap or head else SIZE
         p.paragraph_format.line_spacing = 1.0      # одинарный интервал везде
@@ -156,6 +166,7 @@ def generate(data, out_path, template=None):
     p.add_run(date)
     p.alignment = 0
     p.paragraph_format.tab_stops.clear_all()
+    p.paragraph_format.left_indent = 0
     p.paragraph_format.space_after = Pt(8)       # отступ перед «Объект»
 
     # --- номер акта
