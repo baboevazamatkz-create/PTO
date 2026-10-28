@@ -65,17 +65,26 @@ def add_tab(p, pos, align, leader=WD_TAB_LEADER.SPACES):
     p.paragraph_format.tab_stops.add_tab_stop(int(pos), align, leader)
 
 
-def right_tab(p, width):
-    p.paragraph_format.tab_stops.clear_all()
-    p.paragraph_format.tab_stops.add_tab_stop(width, WD_TAB_ALIGNMENT.RIGHT)
+def ptab(p, leader=None, underline=False):
+    """Позиционная табуляция Word «до правого поля» (без табуляции на самом поле)."""
+    r = p.add_run()
+    if underline:
+        r.underline = True
+    el = OxmlElement("w:ptab")
+    for k, v in (("relativeTo", "margin"), ("alignment", "right"), ("leader", leader or "none")):
+        el.set(qn("w:" + k), v)
+    r._r.append(el)
+    return r
 
 
 def to_edge(p, width):
-    """Подчёркивание значения тянется табуляцией до правого поля."""
-    p.paragraph_format.tab_stops.clear_all()
-    add_tab(p, width, WD_TAB_ALIGNMENT.RIGHT)
-    r = p.add_run("\t")
-    r.underline = True
+    """Линия от конца значения до правого поля.
+
+    Позиционная табуляция Word (ptab) с заполнителем «подчёркивание»: она всегда идёт ровно до
+    правого поля и не зависит от позиций табуляции абзаца. Обычная правая табуляция на самом
+    поле заставляла Word бесконечно перекомпоновывать страницу при печати.
+    """
+    ptab(p, "underscore", underline=True)
 
 
 def bottom_line(p):
@@ -140,9 +149,12 @@ def generate(data, out_path, template=None):
 
     # --- строка «город … дата» (поля остаются как в шаблоне, выравнивание — по табуляции)
     p = doc.paragraphs[find(doc, "г. ")]
-    set_runs(p, [(re.sub(r"\s{3,}", "\t", p.text.strip()), {})])
+    city, date = (re.split(r"\s{3,}", p.text.strip(), maxsplit=1) + [""])[:2]
+    set_runs(p, [(city, {})])
+    ptab(p)
+    p.add_run(date)
     p.alignment = 0
-    right_tab(p, text_width(doc))
+    p.paragraph_format.tab_stops.clear_all()
     p.paragraph_format.space_after = Pt(8)       # отступ перед «Объект»
 
     # --- номер акта
@@ -264,9 +276,9 @@ def generate(data, out_path, template=None):
         add_tab(p, S0, WD_TAB_ALIGNMENT.LEFT)
         add_tab(p, S1, WD_TAB_ALIGNMENT.LEFT, WD_TAB_LEADER.LINES)
         add_tab(p, C2, WD_TAB_ALIGNMENT.CENTER)
-        add_tab(p, W, WD_TAB_ALIGNMENT.RIGHT)
         U = {"u": True}                           # поле расшифровки подчёркнуто целиком
-        set_runs(p, parts + [("\t\t/", {}), ("\t", U), (r["name"], U), ("\t", U)])
+        set_runs(p, parts + [("\t\t/", {}), ("\t", U), (r["name"], U)])
+        ptab(p, "underscore", underline=True)        # поле расшифровки — до правого поля
         p = new_par(proto_sigcap)
         add_tab(p, C1, WD_TAB_ALIGNMENT.CENTER)
         add_tab(p, C2, WD_TAB_ALIGNMENT.CENTER)
