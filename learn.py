@@ -626,6 +626,80 @@ class Knowledge:
         rooms = sorted(table, key=lambda k: (int(key_no(k)), key_floor(k)))
         return rooms, used, table, plan
 
+    # ---------- проверки перед формированием
+    @staticmethod
+    def deps(stage, works):
+        """Что по технологии должно быть закрыто актом раньше этого этапа."""
+        w = work_part(works).lower()
+        floor = bool(re.search(r"\bпол(а|у)?\b|наполь|стяжк", w))
+        if stage == "Греющий кабель":
+            return ["Сетка Фарадея"] if floor else ["Теплоизоляция"]
+        if stage == "Стяжка":
+            return ["Греющий кабель"] if re.search(r"кабел", w) else []
+        if stage == "Гидроизоляция":
+            return ["Стяжка"] if floor else ["Выравнивание, штукатурка"]
+        if stage == "Выравнивание, штукатурка":
+            return ["Греющий кабель"] if re.search(r"кабел", w) else ["Теплоизоляция"]
+        if stage == "Теплоизоляция":
+            return ["Каркас"]
+        if stage == "Обшивка ГКЛ/СМЛ":
+            return ["Теплоизоляция"]
+        if stage == "Чистовая отделка":
+            return ["Гидроизоляция"]
+        return []
+
+    def check_act(self, room, works, start, end, act_no, docs, own_file=""):
+        """Возвращает (ошибки, предупреждения) — списки строк."""
+        errors, warns = [], []
+        if not act_no.strip():
+            errors.append("Не указан номер акта.")
+        else:
+            busy = [r for r in self.recs if r.get("act_no") == act_no.strip() and r["works"] != works
+                    and r.get("file") != own_file]
+            if busy:
+                warns.append(f"Номер № {act_no} уже занят: {work_part(busy[0]['works'])[:80]}.")
+        if "___" in works:
+            errors.append("В строке помещения не заполнены отметка или оси («___»).")
+        if "___" in docs:
+            warns.append("В проекте не указан лист («лист ___»).")
+        if not docs.strip():
+            warns.append("Не заполнена проектная документация.")
+        d1, d2 = to_date(start), to_date(end)
+        if not d1:
+            warns.append("Не указана дата начала работ.")
+        if not d2:
+            warns.append("Не указана дата окончания работ.")
+        if d1 and d2 and d2 < d1:
+            errors.append(f"Окончание работ ({end}) раньше начала ({start}).")
+        if not room:
+            return errors, warns
+        stage = stage_of(works)
+        acts = self.room_acts(room)
+        status = {st: a for st, a in self.room_status(room)}
+        plan = set(self.planned(room))
+        # этапы, которые по технологии должны быть раньше, но акта по ним ещё нет
+        missing = [dep for dep in self.deps(stage, works) if dep in plan and not status.get(dep)]
+        if missing:
+            warns.append(f"По технологии раньше этапа «{stage}» должны быть: " + ", ".join(
+                f"«{m}» (акта нет)" for m in missing) + ".")
+        # начало не раньше окончания предыдущих этапов
+        if d1:
+            for dep in self.deps(stage, works):
+                ends = [(to_date(a.get("end", "")), a) for a in status.get(dep, [])]
+                ends = [(d, a) for d, a in ends if d]
+                if ends:
+                    last_d, last_a = max(ends, key=lambda x: x[0])
+                    if d1 < last_d:
+                        warns.append(f"Начало ({start}) раньше окончания этапа «{dep}» "
+                                     f"(акт № {last_a['act_no']}, окончание {last_a['end']}).")
+        # похожий акт по этому помещению уже есть
+        twin = [a for a in acts if stage_of(a["works"]) == stage and a.get("file") != own_file
+                and sim(work_part(works), work_part(a["works"])) > 0.8 and a.get("act_no") != act_no.strip()]
+        if twin:
+            warns.append(f"По этому помещению уже есть похожий акт № {twin[-1]['act_no']}: "
+                         f"{work_part(twin[-1]['works'])[:70]}.")
+        return errors, warns
+
     def next_act_no(self):
         return str(max((act_num(r["act_no"]) for r in self.recs), default=0) + 1)
 

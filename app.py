@@ -1502,10 +1502,7 @@ class App(tk.Tk):
             messagebox.showwarning("Акт", "Заполните предъявленные работы.")
             return
         d["materials"] = [d["materials_text"]]
-        same = [r for r in self.know.recs if r.get("act_no") == d["act_no"] and r["works"] != d["works"]]
-        if d["act_no"] and same and not messagebox.askyesno(
-                "Номер уже занят", f'Акт № {d["act_no"]} уже есть в реестре:\n{same[0]["works"][:150]}\n\n'
-                                   "Всё равно сформировать с этим номером?"):
+        if not self.run_checks(d):
             return
         base = self.settings.get("base_dir")
         if not base and not (messagebox.askokcancel(
@@ -1530,6 +1527,23 @@ class App(tk.Tk):
         self.last_folder = str(p.parent)
         self.flash_saved(f"✓  {p.parent.name} / {p.name}")
         self.room_refresh()
+
+    def run_checks(self, d):
+        """Проверки перед формированием: ошибки — стоп, предупреждения — спросить."""
+        if not d["reps"] or not any(r.get("on", True) for r in d["reps"]):
+            messagebox.showerror("Проверка акта", "✕  Не выбран ни один представитель.")
+            return False
+        errors, warns = self.know.check_act(self.cur_room, d["works"], d["start"], d["end"],
+                                            d["act_no"], d["docs"])
+        if errors:
+            messagebox.showerror("Проверка акта", "Исправьте, чтобы сформировать акт:\n\n" +
+                                 "\n".join("✕  " + e for e in errors) +
+                                 ("\n\nЕщё замечания:\n" + "\n".join("•  " + w for w in warns) if warns else ""))
+            return False
+        if warns:
+            return messagebox.askyesno("Проверка акта", "Замечания:\n\n" + "\n".join("•  " + w for w in warns) +
+                                       "\n\nВсё равно сформировать акт?", icon="warning")
+        return True
 
     def flash_saved(self, text):
         """Галочка рядом с кнопкой вместо всплывающего окна; гаснет сама."""
