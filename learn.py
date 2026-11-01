@@ -170,6 +170,37 @@ STAGE_RULES = [
 ]
 
 
+# Типы помещений: у хаммамов (и пилингов) — металлокаркас, панели, греющий кабель, мозаика;
+# у бань и саун — деревянный каркас, утеплитель с фольгой, обшивка, вагонка.
+KIND_RULES = [("Хаммам", r"хам+ам|пилинг|тепидари"),
+              ("Баня, сауна", r"парн|саун|бан[яи]|финск|парени|запарив")]
+KIND_PLAN = {
+    "Хаммам": ["Дверные проёмы", "Каркас", "Электрика", "Вентиляция", "Теплоизоляция", "Сетка Фарадея",
+               "Греющий кабель", "Выравнивание, штукатурка", "Стяжка", "Гидроизоляция", "Трапы, сантехника",
+               "Чистовая отделка"],
+    "Баня, сауна": ["Дверные проёмы", "Каркас", "Электрика", "Вентиляция", "Теплоизоляция", "Обшивка ГКЛ/СМЛ",
+                    "Гидроизоляция", "Трапы, сантехника", "Чистовая отделка"],
+}
+
+# Наименование работ по умолчанию, если в базе ещё нет такого этапа у помещений того же типа
+KIND_WORK = {
+    ("Хаммам", "Каркас"): "Устройство металлического каркаса стен, потолка и лежака из профильной трубы и профиля",
+    ("Хаммам", "Теплоизоляция"): "Монтаж теплоизоляционных панелей на стены, потолок, сиденья и лежак",
+    ("Хаммам", "Электрика"): "Прокладка кабелей в запотолочном и межстеновом пространствах",
+    ("Хаммам", "Чистовая отделка"): "Облицовка стен, потолка и пола мозаикой с затиркой швов",
+    ("Баня, сауна", "Каркас"): "Устройство деревянного каркаса стен и потолка из бруса с огнебиозащитной пропиткой",
+    ("Баня, сауна", "Чистовая отделка"): "Чистовая отделка стен и потолка вагонкой",
+}
+
+# Сокращения для имени файла — как в архиве актов («обмаз. Г.И. пола», «вырав. ЦПС пола»)
+ABBR = [(r"цементно-песчан\w*\s+стяжк\w*", "ЦПС"), (r"гидроизоляци\w*", "Г.И."), (r"гидроизол\w*", "Г.И."),
+        (r"обмазочн\w*", "обмаз."), (r"выравнивающ\w*", "вырав."), (r"греющ\w*\s+кабел\w*", "гр. кабеля"),
+        (r"нагревательн\w*\s+кабел\w*", "нагр. кабеля"), (r"восстановлени\w*", "восст."),
+        (r"теплоизоляци\w*|теплов\w* изоляци\w*", "теплоизол."), (r"электрокабел\w*|электрическ\w* кабел\w*", "эл. кабеля"),
+        (r"запотолочн\w*", "запотол."), (r"межстен\w*", "межстен."), (r"имеющ\w* пропитку средством огнебиозащиты", ""),
+        (r"с выводом заземления и проверкой металлосвязи \(целостности цепи\)", "")]
+
+
 def stage_of(works):
     wp = work_part(works).lower()
     return next((name for name, rx in STAGE_RULES if re.search(rx, wp)), "Прочее")
@@ -239,6 +270,22 @@ def sheets_text(nums):
     return ("лист " if len(nums) == 1 else "листы ") + ", ".join(nums)
 
 
+def short_work(works, limit=70):
+    """Короткое наименование работ для имени файла."""
+    t = work_part(works)
+    t = t[:1].lower() + t[1:]
+    for rx, sub in ABBR:
+        t = re.sub(rx, sub, t, flags=re.I)
+    t = re.sub(r"\s+", " ", t).strip(" .,")
+    if len(t) > limit:
+        t = t[:limit].rsplit(" ", 1)[0].rstrip(" ,.(")
+    return t
+
+
+def safe_name(t):
+    return re.sub(r'[\\/:*?"<>|]+', " ", t).strip()
+
+
 class Knowledge:
     def __init__(self, records, project=None):
         self.project = project if project and project.get("rooms") else {"rooms": {}}
@@ -255,7 +302,10 @@ class Knowledge:
         key = (rec.get("act_no"), rec.get("works"))
         for i, r in enumerate(self.recs):
             if (r.get("act_no"), r.get("works")) == key:
-                self.recs[i] = {**r, **{k: v for k, v in rec.items() if v}}
+                merged = {**r, **{k: v for k, v in rec.items() if v}}
+                if r.get("source") == "сформирован":     # акт из программы остаётся «сформирован»
+                    merged["source"] = "сформирован"
+                self.recs[i] = merged
                 return False
         if rec.get("works"):
             self.recs.append(rec)
@@ -342,7 +392,7 @@ class Knowledge:
     # ---------- помещения и цепочки работ
     def room_acts(self, room):
         """Акты помещения по возрастанию номера."""
-        return sorted((r for r in self.recs if room_of(r["works"]) == room), key=lambda r: act_num(r["act_no"]))
+        return sorted((r for r in self.recs if room in rooms_of(r["works"])), key=lambda r: act_num(r["act_no"]))
 
     def rooms(self):
         """{номер: подпись для списка}, например {'16': '16 — Русская парная, 2 этаж'}."""
@@ -361,8 +411,52 @@ class Knowledge:
             out[room] = f'{room} — {p["name"]}, {re.sub(r"-й", "", p["floor"])}'
         return dict(sorted(out.items(), key=lambda x: int(x[0])))
 
+    def room_name(self, room):
+        return self.rooms().get(room, room).split(" — ", 1)[-1].rsplit(",", 1)[0]
+
+    def room_kind(self, room):
+        name = self.room_name(room).lower()
+        return next((k for k, rx in KIND_RULES if re.search(rx, name)), "")
+
+    def room_floor(self, room):
+        p = self.project["rooms"].get(room)
+        if p and p.get("floor"):
+            return re.sub(r"\D", "", p["floor"])
+        for r in self.room_acts(room):
+            m = re.search(r"\((\d+)\s*эт", r["works"])
+            if m:
+                return m.group(1)
+        return ""
+
     def planned(self, room):
-        return list(self.project["rooms"].get(room, {}).get("stages", []))
+        """Этапы помещения: из проекта, иначе — типовые для бани или хаммама."""
+        p = self.project["rooms"].get(room)
+        if p and "stages" in p:
+            return list(p["stages"])
+        return list(KIND_PLAN.get(self.room_kind(room), []))
+
+    def room_status(self, room):
+        """[(этап, [акты])] в технологическом порядке: и сделанные, и оставшиеся по плану."""
+        done = {}
+        for r in self.recs:
+            if room in rooms_of(r["works"]):
+                done.setdefault(stage_of(r["works"]), []).append(r)
+        plan = set(self.planned(room))
+        return [(st, sorted(done.get(st, []), key=lambda r: act_num(r["act_no"])))
+                for st in STAGES if st in plan or st in done]
+
+    def file_path(self, rec, base):
+        """База актов: <этаж> этаж / <пом> этаж <этаж> / АСР №<n> п.<пом> <работы>.docx — как в архиве."""
+        rooms = rooms_of(rec["works"])
+        room = rooms[0] if rooms else ""
+        floor = self.room_floor(room) if room else ""
+        folder = Path(base)
+        if room:
+            folder = folder / (f"{floor} этаж" if floor else "Без этажа") / \
+                (f"{room} этаж {floor}" if floor else room)
+        rooms_txt = ", ".join(rooms) if rooms else ""
+        name = f'АСР №{rec["act_no"]}' + (f" п.{rooms_txt}" if rooms_txt else "") + " " + short_work(rec["works"])
+        return folder / (safe_name(name) + ".docx")
 
     def project_docs(self, room, work):
         p = self.project["rooms"].get(room)
@@ -374,13 +468,20 @@ class Knowledge:
         return (f'ТОО «АКВАСЕРВИС»: «Альбом помещения {p["name"]} № {p["album_no"]}, {p["block"]}, '
                 f'{p["floor"]}. ТХ, {sheets_text(nums)}».')
 
-    def typical_work(self, stage):
-        """Самое частое наименование работ этапа в базе."""
+    def typical_work(self, stage, room=""):
+        """Самое частое наименование работ этапа — в первую очередь у помещений того же типа."""
+        kind = self.room_kind(room) if room else ""
         c = {}
         for r in self.recs:
             if stage_of(r["works"]) == stage:
                 wp = work_part(r["works"])
-                c[wp] = c.get(wp, 0) + 1
+                same = bool(kind) and any(self.room_kind(x) == kind for x in rooms_of(r["works"]))
+                c[wp] = c.get(wp, 0) + (3 if same else 1)
+        if (kind, stage) in KIND_WORK:                # при равенстве — ближе к типовому для этого типа помещения
+            for wp in c:
+                c[wp] += 2 * sim(wp, KIND_WORK[(kind, stage)])
+        if kind and not any(v >= 3 for v in c.values()) and (kind, stage) in KIND_WORK:  # примеров этого типа нет
+            return KIND_WORK[(kind, stage)]
         return max(c, key=c.get) if c else stage
 
     def best_work(self, text, exclude=""):
@@ -405,9 +506,9 @@ class Knowledge:
             nxt = self.best_work(last.get("next_works", ""), exclude=work_part(last["works"]))
             if nxt and (not todo or stage_of(nxt) in todo or stage_of(nxt) not in self.planned(room)):
                 return nxt
-        if todo:                                   # по проекту: первый этап, по которому акта ещё нет
-            return self.typical_work(todo[0])
-        return acts[-1].get("next_works", "") if acts else ""
+        if todo:                                   # по плану: первый этап, по которому акта ещё нет
+            return self.typical_work(todo[0], room)
+        return ""                                  # все этапы по плану закрыты
 
     def work_types(self, typed="", room="", limit=15):
         """Виды работ (без помещения) для подсказок: сначала из актов этого помещения."""
@@ -456,8 +557,9 @@ class Knowledge:
         if not tpl:
             return {}
         p = self.project["rooms"].get(room)
-        if room_acts:
-            loc = location_part(room_acts[-1]["works"])
+        single = [r for r in room_acts if rooms_of(r["works"]) == [room]]   # без актов на несколько помещений
+        if single:
+            loc = location_part(single[-1]["works"])
         elif p:                                    # помещение без актов: этаж из проекта, отметку и оси — вручную
             loc = f'Помещение № {room} ({re.sub(r"-й", "", p["floor"])}) отм. ___ оси ___.'
         else:

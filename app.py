@@ -4,13 +4,14 @@ import os
 import re
 import shutil
 import sys
+import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import ttk, filedialog, messagebox, simpledialog, font as tkfont
 
 from generator import base_dir, generate
-from learn import (Knowledge, act_num, import_folder, room_of, split_materials, stage_of,
-                   typed_room, work_part)
+from learn import (Knowledge, act_num, import_folder, room_of, rooms_of, split_materials,
+                   stage_of, typed_room, work_part)
 
 APP_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
 # Данные — в скрытой папке .data рядом с программой: не видно, переносится вместе с .exe
@@ -22,6 +23,7 @@ if os.name == "nt":
 MAT_FILE = DATA_DIR / "materials.json"
 SIGN_FILE = DATA_DIR / "signers.json"
 LAST_FILE = DATA_DIR / "last_project.json"
+SETTINGS_FILE = DATA_DIR / "settings.json"       # папка базы актов и прочие настройки
 PROJ_FILE = DATA_DIR / "project.json"            # проект: помещения, листы альбомов, этапы
 KNOW_FILE = DATA_DIR / "knowledge.json"          # акты, которые программа изучила у пользователя
 
@@ -53,7 +55,7 @@ def spaced(text):
     return "\u200a".join(text.upper())
 
 DEFAULT = {
-    "act_no": "", "works": "", "docs": "", "materials_text": "",
+    "room": "", "act_no": "", "works": "", "docs": "", "materials_text": "",
     "start": "", "end": "", "next_works": "",
     "reps": [],
 }
@@ -649,93 +651,6 @@ class SignersDialog(tk.Toplevel):
         self.destroy()
 
 
-class NextActDialog(tk.Toplevel):
-    """Следующий акт: помещение + вид работ -> черновик всего акта из прошлых актов."""
-
-    def __init__(self, app):
-        super().__init__(app)
-        self.app, k = app, app.know
-        self.title("Следующий акт")
-        self.configure(bg=BG)
-        self.geometry("720x520")
-        self.transient(app)
-        self.grab_set()
-        tk.Label(self, text="Следующий акт", bg=BG, fg=TEXT, font=(SERIF, 15, "bold")).pack(
-            anchor="w", padx=18, pady=(14, 0))
-        tk.Label(self, text="Выберите помещение и вид работ — программа соберёт акт по прошлым актам. "
-                            "Вы только проверяете.", bg=BG, fg=MUTED, wraplength=680, justify="left",
-                 font=("Segoe UI", 9)).pack(anchor="w", padx=18)
-        bar = ttk.Frame(self, padding=(18, 6, 18, 14))
-        bar.pack(side="bottom", fill="x")
-        ttk.Button(bar, text="Отмена", command=self.destroy).pack(side="left")
-        ttk.Button(bar, text="Собрать акт", style="Accent.TButton", command=self.build).pack(side="right")
-
-        card = tk.Frame(self, bg=CARD, highlightthickness=1, highlightbackground=LINE,
-                        highlightcolor=LINE)
-        card.pack(fill="both", expand=True, padx=18, pady=10)
-        inner = tk.Frame(card, bg=CARD, padx=16, pady=12)
-        inner.pack(fill="both", expand=True)
-
-        def label(t):
-            tk.Label(inner, text=spaced(t), bg=CARD, fg=MUTED,
-                     font=("Segoe UI", 7, "bold")).pack(anchor="w", pady=(6, 3))
-
-        self.rooms = k.rooms()
-        label("Помещение")
-        self.room = tk.StringVar()
-        cb = ttk.Combobox(inner, textvariable=self.room, values=list(self.rooms.values()))
-        cb.pack(fill="x")
-        cb.bind("<<ComboboxSelected>>", lambda e: self.on_room())
-        cb.bind("<KeyRelease>", lambda e: self.on_room(typed=True))
-        if not self.rooms:
-            ttk.Label(inner, text="База пуста — сначала нажмите «Импорт актов» и укажите папку с актами.",
-                      style="CardMuted.TLabel").pack(anchor="w", pady=(4, 0))
-
-        label("Последние акты этого помещения")
-        self.history = tk.Label(inner, text="—", bg=CARD, fg=TEXT, justify="left", anchor="w",
-                                wraplength=640, font=("Segoe UI", 9))
-        self.history.pack(fill="x")
-
-        label("Вид работ (подставлен следующий этап — можно изменить)")
-        self.work = text_field(inner, 2, "")
-        self.work.pack(fill="x")
-        Suggest(self.work, lambda t: k.work_types(t if t != self.picked_stage else "", self.room_no()))
-        self.picked_stage = ""
-        cb.focus_set()
-
-    def room_no(self):
-        return typed_room(self.room.get())[0]
-
-    def on_room(self, typed=False):
-        room = self.room_no()
-        acts = self.app.know.room_acts(room) if room else []
-        if acts:
-            self.history.configure(text="\n".join(
-                f'№ {r["act_no"]}  ·  {r.get("end") or "дата ?"}  ·  {work_part(r["works"])[:90]}'
-                for r in acts[-4:]))
-        else:
-            self.history.configure(text="Актов по этому помещению в базе нет." if room else "—")
-        if not typed or acts:
-            stage = self.app.know.next_stage(room) if room else ""
-            if stage and self.work.get("1.0", "end").strip() in ("", self.picked_stage):
-                self.work.delete("1.0", "end")
-                self.work.insert("1.0", stage)
-                self.picked_stage = stage
-
-    def build(self):
-        room, work = self.room_no(), self.work.get("1.0", "end").strip()
-        if not room or not work:
-            messagebox.showwarning("Следующий акт", "Укажите помещение и вид работ.", parent=self)
-            return
-        d = self.app.know.draft(room, work)
-        if not d:
-            messagebox.showwarning("Следующий акт", "В базе нет актов, из которых можно собрать акт.",
-                                   parent=self)
-            return
-        self.app.apply_draft(d)
-        self.destroy()
-
-
 class RegistryDialog(tk.Toplevel):
     """Реестр актов: все сформированные и импортированные акты, поиск, экспорт в Excel."""
 
@@ -1089,8 +1004,10 @@ class App(tk.Tk):
             data["materials_text"] = self.old_materials(data["materials_sel"])
         self.rows = []          # [{"on": BooleanVar, "var": StringVar, "rep": dict, "cb": Combobox}]
         self.reps_data = [dict(r) for r in data["reps"]]
+        self.settings = load_json(SETTINGS_FILE, {})
         self.build(data)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
+        self.after(300, self.scan_base)
 
     # ---------- построение окна
     def build(self, data):
@@ -1117,7 +1034,7 @@ class App(tk.Tk):
         head.create_text(21, 37, text=spaced("освидетельствование скрытых работ"), anchor="w",
                          fill=MUTED, font=("Segoe UI", 7, "bold"))
         btn_wins = []
-        for t, c in (("Импорт ▾", self.import_menu), ("Подписанты", lambda: SignersDialog(self)),
+        for t, c in (("База ▾", self.base_menu), ("Подписанты", lambda: SignersDialog(self)),
                      ("Открыть", self.open_project), ("Сохранить", self.save_project)):
             b = ttk.Button(head, text=t, style="Head.TButton", command=c)
             btn_wins.append((b, head.create_window(0, 25, window=b, anchor="e")))
@@ -1128,12 +1045,11 @@ class App(tk.Tk):
         foot.configure(style="TFrame")
         ttk.Button(foot, text="Сформировать акт (Word)", style="Ok.TButton",
                    command=self.make).pack(side="right")
-        ttk.Button(foot, text="✦  Следующий акт", command=lambda: NextActDialog(self)).pack(side="left")
-        ttk.Button(foot, text="Реестр актов", command=lambda: RegistryDialog(self)).pack(
-            side="left", padx=6)
-        ttk.Button(foot, text="Сводная", command=lambda: SummaryDialog(self)).pack(side="left")
-        self.saved_lbl = tk.Label(foot, text="", bg=BG, fg=SAVED, font=("Segoe UI", 10, "bold"))
+        ttk.Button(foot, text="Реестр актов", command=lambda: RegistryDialog(self)).pack(side="left")
+        ttk.Button(foot, text="Сводная", command=lambda: SummaryDialog(self)).pack(side="left", padx=6)
+        self.saved_lbl = tk.Label(foot, text="", bg=BG, fg=SAVED, font=("Segoe UI", 10, "bold"), cursor="hand2")
         self.saved_lbl.pack(side="right", padx=12)
+        self.saved_lbl.bind("<Button-1>", lambda e: self.open_path(getattr(self, "last_folder", "")))
 
         wrap, body, cv = scrollable(self, BG)
         wrap.pack(fill="both", expand=True)
@@ -1162,6 +1078,24 @@ class App(tk.Tk):
             tk.Label(cap_, text="   " + spaced(title), bg=CARD, fg=MUTED,
                      font=("Segoe UI", 7, "bold")).pack(side="left")
             return inner
+
+        # 0. помещение — основа: какие акты сделаны, какие остались
+        c = section("Помещение")
+        top = tk.Frame(c, bg=CARD)
+        top.pack(fill="x")
+        self.room_var = tk.StringVar()
+        self.room_cb = ttk.Combobox(top, textvariable=self.room_var, state="readonly", width=44)
+        self.room_cb.pack(side="left")
+        self.room_cb.bind("<<ComboboxSelected>>", lambda e: self.room_select())
+        ttk.Button(top, text="✦  Следующий акт", style="Accent.TButton",
+                   command=self.room_next).pack(side="right")
+        self.room_info = tk.Label(c, text="", bg=CARD, fg=MUTED, font=("Segoe UI", 9), anchor="w")
+        self.room_info.pack(fill="x", pady=(4, 0))
+        self.chips = tk.Frame(c, bg=CARD)
+        self.chips.pack(fill="x", pady=(6, 0))
+        self.base_info = tk.Label(c, text="", bg=CARD, fg=MUTED, font=("Segoe UI", 8), anchor="w")
+        self.base_info.pack(fill="x")
+        self.cur_room = data.get("room", "")
 
         # 1. номер акта
         c = section("Акт №")
@@ -1217,6 +1151,74 @@ class App(tk.Tk):
             k._uniq([r["materials"] for r in k.related(works())], 10), t))
         Suggest(self.next_works, lambda t: filter_typed(k.suggest_next(works()), t))
         Suggest.install(self)
+        self.room_refresh()
+
+    # ---------- помещение
+    def room_refresh(self):
+        labels = self.know.rooms()
+        self.room_labels = labels
+        self.room_cb.configure(values=list(labels.values()))
+        if self.cur_room in labels:
+            self.room_var.set(labels[self.cur_room])
+        base = self.settings.get("base_dir")
+        if not base:
+            self.base_info.configure(text="Папка базы актов не выбрана: «База ▾ → Папка базы актов…»")
+        self.room_draw()
+
+    def room_select(self):
+        lbl = self.room_var.get()
+        self.cur_room = next((k for k, v in self.room_labels.items() if v == lbl), "")
+        self.room_draw()
+
+    def room_draw(self):
+        for w in self.chips.winfo_children():
+            w.destroy()
+        room = self.cur_room
+        if not room:
+            self.room_info.configure(text="выберите помещение — покажу, какие акты сделаны и какие остались")
+            return
+        status = self.know.room_status(room)
+        done = sum(1 for _, acts in status if acts)
+        kind = self.know.room_kind(room)
+        floor = self.know.room_floor(room)
+        self.room_info.configure(text="  ·  ".join(x for x in (kind, f"{floor} этаж" if floor else "",
+                                                             f"этапов закрыто {done} из {len(status)}") if x))
+        cols = 4
+        for c in range(cols):
+            self.chips.columnconfigure(c, weight=1, uniform="chip")
+        for i, (st, acts) in enumerate(status):
+            if acts:
+                txt = "✓  " + st + "\n" + ", ".join("№ " + (a["act_no"] or "без номера") for a in acts[:4])
+                lb = tk.Label(self.chips, text=txt, bg=DONE_BG, fg=SAVED, justify="left", anchor="w",
+                              padx=8, pady=3, font=("Segoe UI", 8), cursor="hand2")
+                lb.bind("<Button-1>", lambda e: self.open_room_registry())
+            else:
+                lb = tk.Label(self.chips, text="○  " + st + "\nсоздать акт", bg=NEED_BG, fg=ACCENT_D,
+                              justify="left", anchor="w", padx=8, pady=3, font=("Segoe UI", 8), cursor="hand2")
+                lb.bind("<Button-1>", lambda e, s=st: self.room_stage(s))
+            lb.grid(row=i // cols, column=i % cols, sticky="nsew", padx=(0, 4), pady=(0, 4))
+
+    def open_room_registry(self):
+        RegistryDialog(self).q.set(self.cur_room)
+
+    def room_stage(self, stage):
+        self.room_build(self.know.typical_work(stage, self.cur_room))
+
+    def room_next(self):
+        if not self.cur_room:
+            messagebox.showinfo("Помещение", "Сначала выберите помещение.")
+            return
+        work = self.know.next_stage(self.cur_room)
+        if not work:
+            messagebox.showinfo("Помещение", "По этому помещению все этапы закрыты актами.\n"
+                                             "Нужен ещё акт — нажмите на этап или впишите работы вручную.")
+            return
+        self.room_build(work)
+
+    def room_build(self, work):
+        d = self.know.draft(self.cur_room, work)
+        if d:
+            self.apply_draft(d)
 
     # ---------- представители
     def signer_labels(self):
@@ -1287,11 +1289,57 @@ class App(tk.Tk):
         by = {m["name"]: m for m in self.mats}
         return " ".join(mat_text(by[n]) for n in names if n in by)
 
-    def import_menu(self):
+    def base_menu(self):
         m = tk.Menu(self, tearoff=0)
-        m.add_command(label="Акты из папки (.docx)…", command=self.import_acts)
-        m.add_command(label="Проект (файл .json)…", command=self.import_project)
+        base = self.settings.get("base_dir")
+        m.add_command(label=f"Папка базы актов…  ({base})" if base else "Папка базы актов…",
+                      command=self.choose_base)
+        m.add_command(label="Открыть папку базы", command=lambda: self.open_path(base),
+                      state="normal" if base else "disabled")
+        m.add_command(label="Обновить базу из папки", command=lambda: self.scan_base(report=True),
+                      state="normal" if base else "disabled")
+        m.add_separator()
+        m.add_command(label="Импорт актов из другой папки…", command=self.import_acts)
+        m.add_command(label="Импорт проекта (файл .json)…", command=self.import_project)
         m.tk_popup(self.winfo_pointerx(), self.winfo_pointery())
+
+    # ---------- база актов в папке
+    def choose_base(self):
+        p = filedialog.askdirectory(title="Папка базы актов: здесь хранятся все акты по этажам и помещениям")
+        if not p:
+            return False
+        self.settings["base_dir"] = p
+        save_json(SETTINGS_FILE, self.settings)
+        self.scan_base(report=True)
+        return True
+
+    @staticmethod
+    def open_path(p):
+        if p and Path(p).exists() and hasattr(os, "startfile"):
+            os.startfile(p)
+
+    def scan_base(self, report=False):
+        """Читает все акты из папки базы в фоне и обновляет реестр, сводную и блок помещения."""
+        base = self.settings.get("base_dir")
+        if not base or not Path(base).exists():
+            return
+        self.base_info.configure(text="База: читаю папку…")
+
+        def work():
+            recs = import_folder(base)
+            self.after(0, lambda: done(recs))
+
+        def done(recs):
+            for r in recs:
+                r["source"] = "папка базы"
+            new = [r for r in recs if self.know.upsert(r)]
+            self.save_know()
+            self.room_refresh()
+            self.base_info.configure(text=f"База: {base}  ·  актов в папке: {len(recs)}")
+            if report:
+                messagebox.showinfo("База актов", f"Актов в папке: {len(recs)}\nНовых в реестре: {len(new)}")
+
+        threading.Thread(target=work, daemon=True).start()
 
     def import_project(self):
         p = filedialog.askopenfilename(title="Файл проекта", filetypes=[("Проект", "*.json")])
@@ -1358,7 +1406,7 @@ class App(tk.Tk):
     def collect(self):
         self.rep_read()
         g = lambda t: cap(t.get("1.0", "end"))
-        return {"act_no": self.act_no.get().strip(), "works": g(self.works), "docs": g(self.docs),
+        return {"room": self.cur_room, "act_no": self.act_no.get().strip(), "works": g(self.works), "docs": g(self.docs),
                 "materials_text": g(self.materials),
                 "start": self.start.get().strip(), "end": self.end.get().strip(),
                 "next_works": g(self.next_works),
@@ -1377,6 +1425,10 @@ class App(tk.Tk):
         self.end.set(d["end"])
         self.reps_data = [dict(r) for r in d["reps"]]
         self.rep_draw()
+        room = d.get("room") or room_of(d["works"])
+        if room and hasattr(self, "room_cb"):
+            self.cur_room = room
+            self.room_refresh()
 
     def open_project(self):
         p = filedialog.askopenfilename(filetypes=[("Проект акта", "*.json")])
@@ -1398,10 +1450,17 @@ class App(tk.Tk):
                 "Номер уже занят", f'Акт № {d["act_no"]} уже есть в реестре:\n{same[0]["works"][:150]}\n\n'
                                    "Всё равно сформировать с этим номером?"):
             return
-        p = filedialog.asksaveasfilename(defaultextension=".docx", filetypes=[("Word", "*.docx")],
-                                         initialfile=f"Акт № {d['act_no']}.docx")
-        if not p:
+        base = self.settings.get("base_dir")
+        if not base and not (messagebox.askokcancel(
+                "Папка базы актов", "Выберите папку базы актов. Программа будет сама раскладывать акты "
+                                    "по этажам и помещениям и давать имена файлам.") and self.choose_base()):
             return
+        base = self.settings["base_dir"]
+        hint = self.cur_room if not rooms_of(d["works"]) else ""
+        p = self.know.file_path({**d, "works": d["works"] + (f" Помещение № {hint}" if hint else "")}, base)
+        if p.exists() and not messagebox.askyesno("Файл уже есть", f"{p.name}\nуже есть в базе. Заменить?"):
+            return
+        p.parent.mkdir(parents=True, exist_ok=True)
         try:
             generate(d, p)
         except PermissionError:
@@ -1412,7 +1471,9 @@ class App(tk.Tk):
             return
         save_json(LAST_FILE, self.collect())
         self.learn(d, p)
-        self.flash_saved(f"✓  Сохранено: {Path(p).name}")
+        self.last_folder = str(p.parent)
+        self.flash_saved(f"✓  {p.parent.name} / {p.name}")
+        self.room_refresh()
 
     def flash_saved(self, text):
         """Галочка рядом с кнопкой вместо всплывающего окна; гаснет сама."""
