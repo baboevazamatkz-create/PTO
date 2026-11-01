@@ -206,6 +206,21 @@ def stage_of(works):
     return next((name for name, rx in STAGE_RULES if re.search(rx, wp)), "Прочее")
 
 
+def floor_of(text):
+    """Этаж из текста: «(2 этаж)», «(5 эт.)», «(1 блок, 2 этаж)», «5-й этаж»."""
+    m = re.search(r"(\d+)\s*(?:-?й\s*)?эт", text or "")
+    return m.group(1) if m else ""
+
+
+def key_no(key):
+    """Ключ помещения «38.2» -> номер «38»."""
+    return key.split(".")[0]
+
+
+def key_floor(key):
+    return key.split(".")[1] if "." in key else ""
+
+
 def typed_room(text):
     """Номер помещения из того, что набрал пользователь: «помещение 32», «п. 32», «№32» или просто «32»."""
     m = ROOM_RE.search(text) or re.search(r"(?:\bп\.|№)\s*(\d{1,3})\b", text) \
@@ -238,7 +253,7 @@ def project_sheets(sheets, work, stage):
     """Номера листов альбома, подходящих к работам (по названиям листов)."""
     w = work.lower()
     want = []
-    floor = re.search(r"\bпол(а|у|ов)?\b|стяжк|трап|фараде", w)
+    floor = re.search(r"\bпол(а|у|ов)?\b|наполь|стяжк|трап|фараде", w)
     if floor:
         want.append(r"план пол(а|ов)\b")
     if re.search(r"нагрев|греющ", w):
@@ -249,7 +264,10 @@ def project_sheets(sheets, work, stage):
         want.append(r"полков")
     if re.search(r"купол", w):
         want.append(r"купол")
-    if re.search(r"стен|потол|купол", w) and stage in ("Выравнивание, штукатурка", "Гидроизоляция"):
+    if re.search(r"контр-?рейк", w):
+        want.append(r"контр-?рейк")
+    if re.search(r"стен|потол|купол", w) and stage in ("Выравнивание, штукатурка", "Гидроизоляция",
+                                                       "Чистовая отделка"):
         want.append(r"разрез")                    # стены/потолок/купол в актах ссылаются на разрезы
     elif re.search(r"потол", w):
         want.append(r"каркас.*потол|потол.*каркас" if stage == "Каркас" else r"план потолка")
@@ -263,6 +281,11 @@ def project_sheets(sheets, work, stage):
         want.append(r"стенов|каркас")
     found = [no for no, name in sheets.items()
              if any(re.search(rx, name.lower()) for rx in want) and not re.search(r"специфик|общие", name.lower())]
+    if stage != "Чистовая отделка":               # для гидроизоляции и выравнивания хватает первого разреза
+        cuts = [no for no in found if "разрез" in sheets[no].lower()]
+        found = [no for no in found if no not in cuts[1:]]
+    if re.search(r"контр-?рейк", w):              # контррейка — свой лист, без общего каркаса
+        found = [no for no in found if re.search(r"контр-?рейк", sheets[no].lower())] or found
     return found[:5]
 
 
@@ -289,6 +312,12 @@ def safe_name(t):
 class Knowledge:
     def __init__(self, records, project=None):
         self.project = project if project and project.get("rooms") else {"rooms": {}}
+        # помещение = номер + этаж («38.2» и «38.5» — разные помещения); старые ключи «38» дополняем этажом
+        rooms = {}
+        for k, p in self.project["rooms"].items():
+            fl = re.sub(r"\D", "", p.get("floor", ""))
+            rooms[k if "." in k or not fl else f"{k}.{fl}"] = p
+        self.project["rooms"] = rooms
         self.recs = []
         seen = set()
         for r in records:
@@ -318,6 +347,22 @@ class Knowledge:
             self.recs.append(rec)
             return True
         return False
+
+    def rec_floor(self, r):
+        return floor_of(location_part(r["works"])) or floor_of(r["works"]) or \
+            (re.search(r"[\\/](\d+) этаж[\\/]", r.get("file", "")) or [None, ""])[1]
+
+    def keys(self, r):
+        """Помещения акта как ключи «номер.этаж»."""
+        fl = self.rec_floor(r)
+        out = []
+        for n in rooms_of(r["works"]):
+            if fl:
+                out.append(f"{n}.{fl}")
+            else:                                  # этаж не указан: если в проекте такой номер один — он
+                same = [k for k in self.project["rooms"] if key_no(k) == n]
+                out.append(same[0] if len(same) == 1 else n)
+        return out
 
     @staticmethod
     def _uniq(items, limit):
@@ -392,33 +437,42 @@ class Knowledge:
     # ---------- помещения и цепочки работ
     def room_acts(self, room):
         """Акты помещения по возрастанию номера."""
-        return sorted((r for r in self.recs if room in rooms_of(r["works"])), key=lambda r: act_num(r["act_no"]))
+        return sorted((r for r in self.recs if room in self.keys(r)), key=lambda r: act_num(r["act_no"]))
 
     def rooms(self):
-        """{номер: подпись для списка}, например {'16': '16 — Русская парная, 2 этаж'}."""
-        out = {}
+        """{ключ: подпись}, например {'38.2': '38 · 2 этаж — Хамам мужское отделение'}."""
+        names = {}
         for r in self.recs:
-            room = room_of(r["works"])
-            if not room:
-                continue
-            name = next((m.group(1).strip(" «»") for m in ROOM_NAME_RE.finditer(r.get("docs", ""))
-                         if m.group(2) == room), "")
-            floor = re.search(r"\((\d+)\s*этаж", r["works"])
-            label = room + (f" — {name}" if name else "") + (f", {floor.group(1)} этаж" if floor else "")
-            if len(label) > len(out.get(room, "")):
-                out[room] = label
-        for room, p in self.project["rooms"].items():   # проект важнее: точное название, все помещения
-            out[room] = f'{room} — {p["name"]}, {re.sub(r"-й", "", p["floor"])}'
-        return dict(sorted(out.items(), key=lambda x: int(x[0])))
+            for key in self.keys(r):
+                n = key_no(key)
+                name = next((m.group(1).strip(" «»") for m in ROOM_NAME_RE.finditer(r.get("docs", ""))
+                             if m.group(2) == n), "")
+                if len(name) > len(names.get(key, "")) or key not in names:
+                    names[key] = name or names.get(key, "")
+        for key, p in self.project["rooms"].items():   # проект важнее: точное название, все помещения
+            names[key] = p["name"]
+
+        def label(key):
+            fl = key_floor(key)
+            return f"{key_no(key)}" + (f" · {fl} этаж" if fl else "") + (f" — {names[key]}" if names[key] else "")
+
+        order = sorted(names, key=lambda k: (int(key_no(k)), key_floor(k)))
+        return {k: label(k) for k in order}
 
     def room_name(self, room):
-        return self.rooms().get(room, room).split(" — ", 1)[-1].rsplit(",", 1)[0]
+        p = self.project["rooms"].get(room)
+        if p:
+            return p["name"]
+        lbl = self.rooms().get(room, "")
+        return lbl.split(" — ", 1)[1] if " — " in lbl else ""
 
     def room_kind(self, room):
         name = self.room_name(room).lower()
         return next((k for k, rx in KIND_RULES if re.search(rx, name)), "")
 
     def room_floor(self, room):
+        if key_floor(room):
+            return key_floor(room)
         p = self.project["rooms"].get(room)
         if p and p.get("floor"):
             return re.sub(r"\D", "", p["floor"])
@@ -439,22 +493,23 @@ class Knowledge:
         """[(этап, [акты])] в технологическом порядке: и сделанные, и оставшиеся по плану."""
         done = {}
         for r in self.recs:
-            if room in rooms_of(r["works"]):
+            if room in self.keys(r):
                 done.setdefault(stage_of(r["works"]), []).append(r)
         plan = set(self.planned(room))
         return [(st, sorted(done.get(st, []), key=lambda r: act_num(r["act_no"])))
                 for st in STAGES if st in plan or st in done]
 
-    def file_path(self, rec, base):
+    def file_path(self, rec, base, hint=""):
         """База актов: <этаж> этаж / <пом> этаж <этаж> / АСР №<n> п.<пом> <работы>.docx — как в архиве."""
-        rooms = rooms_of(rec["works"])
-        room = rooms[0] if rooms else ""
+        keys = self.keys(rec) or ([hint] if hint else [])
+        room = keys[0] if keys else ""
         floor = self.room_floor(room) if room else ""
+        no = key_no(room)
         folder = Path(base)
         if room:
             folder = folder / (f"{floor} этаж" if floor else "Без этажа") / \
-                (f"{room} этаж {floor}" if floor else room)
-        rooms_txt = ", ".join(rooms) if rooms else ""
+                (f"{no} этаж {floor}" if floor else no)
+        rooms_txt = ", ".join(key_no(k) for k in keys)
         name = f'АСР №{rec["act_no"]}' + (f" п.{rooms_txt}" if rooms_txt else "") + " " + short_work(rec["works"])
         return folder / (safe_name(name) + ".docx")
 
@@ -475,7 +530,7 @@ class Knowledge:
         for r in self.recs:
             if stage_of(r["works"]) == stage:
                 wp = work_part(r["works"])
-                same = bool(kind) and any(self.room_kind(x) == kind for x in rooms_of(r["works"]))
+                same = bool(kind) and any(self.room_kind(x) == kind for x in self.keys(r))
                 c[wp] = c.get(wp, 0) + (3 if same else 1)
         if (kind, stage) in KIND_WORK:                # при равенстве — ближе к типовому для этого типа помещения
             for wp in c:
@@ -529,7 +584,7 @@ class Knowledge:
         table = {}
         for r in self.recs:
             st = stage_of(r["works"])
-            for room in rooms_of(r["works"]):
+            for room in self.keys(r):
                 table.setdefault(room, {}).setdefault(st, []).append(r)
         for cells in table.values():
             for acts in cells.values():
@@ -538,7 +593,7 @@ class Knowledge:
             table.setdefault(room, {})
         plan = {room: set(self.planned(room)) for room in table}
         used = [s for s in STAGES if any(s in c for c in table.values()) or any(s in pl for pl in plan.values())]
-        rooms = sorted(table, key=int)
+        rooms = sorted(table, key=lambda k: (int(key_no(k)), key_floor(k)))
         return rooms, used, table, plan
 
     def next_act_no(self):
@@ -551,17 +606,17 @@ class Knowledge:
         def score(r):
             wp = work_part(r["works"])
             s = sim(work, wp) + (0.5 if work and work.lower() in wp.lower() else 0)
-            return s + (0.05 if room_of(r["works"]) == room else 0)   # помещение — только при равенстве
+            return s + (0.05 if room in self.keys(r) else 0)   # помещение — только при равенстве
 
         tpl = max(self.recs, key=score, default=None)
         if not tpl:
             return {}
         p = self.project["rooms"].get(room)
-        single = [r for r in room_acts if rooms_of(r["works"]) == [room]]   # без актов на несколько помещений
+        single = [r for r in room_acts if self.keys(r) == [room]]   # без актов на несколько помещений
         if single:
             loc = location_part(single[-1]["works"])
-        elif p:                                    # помещение без актов: этаж из проекта, отметку и оси — вручную
-            loc = f'Помещение № {room} ({re.sub(r"-й", "", p["floor"])}) отм. ___ оси ___.'
+        elif p or key_floor(room):                 # помещение без актов: этаж из ключа/проекта, отметку и оси — вручную
+            loc = f'Помещение № {key_no(room)} ({self.room_floor(room)} этаж) отм. ___ оси ___.'
         else:
             loc = location_part(tpl["works"])
         wp = work_part(tpl["works"]) if sim(work, work_part(tpl["works"])) > 0.3 else work

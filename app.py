@@ -10,8 +10,8 @@ from pathlib import Path
 from tkinter import ttk, filedialog, messagebox, simpledialog, font as tkfont
 
 from generator import base_dir, generate
-from learn import (Knowledge, act_num, import_folder, room_of, rooms_of, split_materials,
-                   stage_of, typed_room, work_part)
+from learn import (Knowledge, act_num, import_folder, key_no, split_materials, stage_of,
+                   work_part)
 
 APP_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
 # Данные — в скрытой папке .data рядом с программой: не видно, переносится вместе с .exe
@@ -655,7 +655,7 @@ class RegistryDialog(tk.Toplevel):
     """Реестр актов: все сформированные и импортированные акты, поиск, экспорт в Excel."""
 
     COLS = (("act_no", "№", 50), ("start", "Начало", 80), ("end", "Окончание", 80),
-            ("room", "Пом.", 45), ("works", "Предъявленные работы", 420), ("source", "Откуда", 90))
+            ("room", "Пом.", 60), ("works", "Предъявленные работы", 420), ("source", "Откуда", 90))
 
     def __init__(self, app):
         super().__init__(app)
@@ -670,7 +670,7 @@ class RegistryDialog(tk.Toplevel):
         self.q = tk.StringVar()
         self.q.trace_add("write", lambda *_: self.refresh())
         ttk.Entry(top, textvariable=self.q, width=32).pack(side="right")
-        ttk.Label(top, text="Поиск: № акта или помещения, слова из работ", style="Muted.TLabel").pack(side="right", padx=8)
+        ttk.Label(top, text="Поиск: № акта, помещение (38 или 38.2), слова из работ", style="Muted.TLabel").pack(side="right", padx=8)
         self.count = ttk.Label(self, text="", style="Muted.TLabel")
         self.count.pack(anchor="w", padx=18)
         bar = ttk.Frame(self, padding=(18, 6, 18, 14))
@@ -699,11 +699,15 @@ class RegistryDialog(tk.Toplevel):
         recs = sorted(self.app.know.recs, key=lambda r: (act_num(r.get("act_no")), r.get("act_no", "")))
         out = []
         for r in recs:
-            if q.isdigit():                       # число — точный номер акта или помещения
-                if q in (r.get("act_no", "").strip(), room_of(r["works"])):
+            if re.fullmatch(r"\d+\.\d+", q):        # «38.2» — помещение с этажом
+                if q in self.app.know.keys(r):
                     out.append(r)
                 continue
-            hay = " ".join([r.get("act_no", ""), r.get("works", ""), r.get("docs", ""), room_of(r["works"])])
+            if q.isdigit():                       # число — точный номер акта или помещения
+                if q == r.get("act_no", "").strip() or q in [key_no(k) for k in self.app.know.keys(r)]:
+                    out.append(r)
+                continue
+            hay = " ".join([r.get("act_no", ""), r.get("works", ""), r.get("docs", "")] + self.app.know.keys(r))
             if not q or all(w in hay.lower() for w in q.split()):
                 out.append(r)
         return out
@@ -713,7 +717,7 @@ class RegistryDialog(tk.Toplevel):
         self.shown = self.rows()
         for i, r in enumerate(self.shown):
             self.tree.insert("", "end", iid=str(i), values=(
-                r.get("act_no", ""), r.get("start", ""), r.get("end", ""), room_of(r["works"]),
+                r.get("act_no", ""), r.get("start", ""), r.get("end", ""), ", ".join(self.app.know.keys(r)),
                 r["works"], r.get("source", "импорт")))
         self.count.configure(text=f"Актов: {len(self.shown)} из {len(self.app.know.recs)}")
 
@@ -751,7 +755,7 @@ class RegistryDialog(tk.Toplevel):
         if not p:
             return
         try:
-            export_registry(self.shown, p)
+            export_registry(self.shown, p, self.app.know)
         except PermissionError:
             messagebox.showerror("Реестр", "Файл открыт в Excel. Закройте его и повторите.", parent=self)
             return
@@ -760,7 +764,7 @@ class RegistryDialog(tk.Toplevel):
             os.startfile(p)
 
 
-def export_registry(recs, path):
+def export_registry(recs, path, know):
     """Реестр в Excel: шапка, перенос строк, фильтр, закреплённая первая строка."""
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -780,7 +784,7 @@ def export_registry(recs, path):
         cell.alignment = Alignment(vertical="center", wrap_text=True)
         ws.column_dimensions[cell.column_letter].width = w
     for r in recs:
-        ws.append([r.get("act_no", ""), r.get("start", ""), r.get("end", ""), room_of(r["works"]),
+        ws.append([r.get("act_no", ""), r.get("start", ""), r.get("end", ""), ", ".join(know.keys(r)),
                    r.get("works", ""), r.get("docs", ""), r.get("materials", ""), r.get("next_works", ""),
                    ", ".join(r.get("signers", [])), r.get("file", "")])
     for row in ws.iter_rows(min_row=2):
@@ -1425,7 +1429,8 @@ class App(tk.Tk):
         self.end.set(d["end"])
         self.reps_data = [dict(r) for r in d["reps"]]
         self.rep_draw()
-        room = d.get("room") or room_of(d["works"])
+        keys = self.know.keys({"works": d["works"]})
+        room = d.get("room") or (keys[0] if keys else "")
         if room and hasattr(self, "room_cb"):
             self.cur_room = room
             self.room_refresh()
@@ -1456,8 +1461,7 @@ class App(tk.Tk):
                                     "по этажам и помещениям и давать имена файлам.") and self.choose_base()):
             return
         base = self.settings["base_dir"]
-        hint = self.cur_room if not rooms_of(d["works"]) else ""
-        p = self.know.file_path({**d, "works": d["works"] + (f" Помещение № {hint}" if hint else "")}, base)
+        p = self.know.file_path(d, base, hint=self.cur_room)
         if p.exists() and not messagebox.askyesno("Файл уже есть", f"{p.name}\nуже есть в базе. Заменить?"):
             return
         p.parent.mkdir(parents=True, exist_ok=True)
