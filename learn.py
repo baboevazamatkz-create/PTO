@@ -139,6 +139,42 @@ def room_of(text):
     return m.group(1) if m else ""
 
 
+def rooms_of(text):
+    """Все помещения акта: «Помещения №№ 16, 19, 22 (…)» -> ['16', '19', '22']."""
+    m = re.search(r"помещени\w*\s*((?:№\s*)*\d+(?:\s*(?:,|и)\s*(?:№\s*)*\d+)*)", text or "", re.I)
+    return re.findall(r"\d+", m.group(1)) if m else []
+
+
+# Этапы работ в технологическом порядке (колонки сводной таблицы).
+# При разборе берётся ПЕРВОЕ совпадение из STAGE_RULES — порядок правил важен.
+STAGES = ["Дверные проёмы", "Каркас", "Электрика", "Вентиляция", "Теплоизоляция", "Обшивка ГКЛ/СМЛ",
+          "Сетка Фарадея", "Греющий кабель", "Выравнивание, штукатурка", "Стяжка", "Гидроизоляция",
+          "Трапы, сантехника", "Чистовая отделка", "Витраж", "Бассейн", "Прочее"]
+STAGE_RULES = [
+    ("Бассейн", r"бассейн"),
+    ("Дверные проёмы", r"дверн"),
+    ("Трапы, сантехника", r"трап|сантехн|смесител"),
+    ("Вентиляция", r"вентиляц"),
+    ("Витраж", r"витраж"),
+    ("Сетка Фарадея", r"фараде"),
+    ("Чистовая отделка", r"затирк|плитк|керамогранит|кафел|мозаик|камн|вагонк|слэб|чистов"),
+    ("Выравнивание, штукатурка", r"оштукатур|штукатур"),
+    ("Теплоизоляция", r"теплов|теплоизол"),
+    ("Обшивка ГКЛ/СМЛ", r"облицовк|обшивк"),
+    ("Гидроизоляция", r"гидроизол|герметиз"),
+    ("Стяжка", r"стяжк"),
+    ("Выравнивание, штукатурка", r"выравнива"),
+    ("Греющий кабель", r"греющ|нагреват"),
+    ("Электрика", r"электр|кабел"),
+    ("Каркас", r"каркас|обрешетк|контррейк"),
+]
+
+
+def stage_of(works):
+    wp = work_part(works).lower()
+    return next((name for name, rx in STAGE_RULES if re.search(rx, wp)), "Прочее")
+
+
 def typed_room(text):
     """Номер помещения из того, что набрал пользователь: «помещение 32», «п. 32», «№32» или просто «32»."""
     m = ROOM_RE.search(text) or re.search(r"(?:\bп\.|№)\s*(\d{1,3})\b", text) \
@@ -319,6 +355,20 @@ class Knowledge:
             scored[wp] = max(scored.get(wp, 0), s)
         ranked = sorted(scored.items(), key=lambda x: -x[1])
         return self._uniq([w for w, s in ranked if s > 0.05], limit)
+
+    def summary(self):
+        """Сводная: {помещение: {этап: [акты]}} и список задействованных этапов по порядку."""
+        table = {}
+        for r in self.recs:
+            st = stage_of(r["works"])
+            for room in rooms_of(r["works"]):
+                table.setdefault(room, {}).setdefault(st, []).append(r)
+        for cells in table.values():
+            for acts in cells.values():
+                acts.sort(key=lambda r: act_num(r["act_no"]))
+        used = [s for s in STAGES if any(s in c for c in table.values())]
+        rooms = sorted(table, key=int)
+        return rooms, used, table
 
     def next_act_no(self):
         return str(max((act_num(r["act_no"]) for r in self.recs), default=0) + 1)

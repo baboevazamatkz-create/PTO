@@ -9,8 +9,8 @@ from pathlib import Path
 from tkinter import ttk, filedialog, messagebox, simpledialog, font as tkfont
 
 from generator import base_dir, generate
-from learn import (Knowledge, act_num, import_folder, room_of, split_materials, typed_room,
-                   work_part)
+from learn import (Knowledge, act_num, import_folder, room_of, split_materials, stage_of,
+                   typed_room, work_part)
 
 APP_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
 # Данные — в скрытой папке .data рядом с программой: не видно, переносится вместе с .exe
@@ -39,7 +39,8 @@ ROLES = ["Заказчика", "Подрядчика", "Технического
 # Палитра «Ivory»: тёплая бумага, чернила и золото-шампань
 BG, CARD, FIELD, LINE, SOFT = "#F4EFE6", "#FBF9F5", "#FFFFFF", "#E4DDD0", "#F1EADD"
 TEXT, MUTED, ACCENT, ACCENT_D = "#1B1813", "#8A8277", "#9A7B44", "#7E6334"
-SAVED = "#44705B"                 # изумрудный из палитры Altyn
+SAVED = "#44705B"
+DONE_BG = "#E4EEE2"               # ячейка сводной: акт есть                 # изумрудный из палитры Altyn
 INK_ON, CHAMPAGNE, HOVER = "#F6F2EA", "#C8A86B", "#EFE3CB"
 PAPER_TOP, PAPER_BOTTOM = "#F6F2EA", "#EDE6DA"
 SERIF = "Georgia"
@@ -874,6 +875,164 @@ def export_registry(recs, path):
     wb.save(path)
 
 
+def short_date(s):
+    return s[:5] if s else ""
+
+
+class SummaryDialog(tk.Toplevel):
+    """Сводная: помещения × этапы работ, в ячейке — номера актов. Строится из реестра заново
+    при каждом открытии, поэтому новые акты попадают в неё сами."""
+
+    CELL_W, ROOM_W = 104, 230
+
+    def __init__(self, app):
+        super().__init__(app)
+        self.app = app
+        self.title("Сводная по помещениям")
+        self.configure(bg=BG)
+        self.geometry("1180x620")
+        self.transient(app)
+        top = ttk.Frame(self, padding=(18, 12, 18, 2))
+        top.pack(fill="x")
+        tk.Label(top, text="Сводная по помещениям", bg=BG, fg=TEXT, font=(SERIF, 15, "bold")).pack(side="left")
+        ttk.Button(top, text="Экспорт в Excel", style="Accent.TButton", command=self.export).pack(side="right")
+        self.info = tk.Label(self, text="Наведите на ячейку — внизу появятся акты. Клик — открыть в реестре.",
+                             bg=BG, fg=MUTED, anchor="w", justify="left", wraplength=1120,
+                             font=("Segoe UI", 9))
+        self.info.pack(side="bottom", fill="x", padx=18, pady=(4, 12))
+
+        self.rooms, self.stages, self.table = app.know.summary()
+        self.labels = app.know.rooms()
+        if not self.rooms:
+            tk.Label(self, text="Реестр пуст — нажмите «Импорт актов».", bg=BG, fg=MUTED).pack(pady=40)
+            return
+        # шапка — в отдельном холсте: при прокрутке вниз остаётся на месте, вбок — едет вместе с таблицей
+        box = tk.Frame(self, bg=BG)
+        box.pack(fill="both", expand=True, padx=18, pady=6)
+        hs = ttk.Scrollbar(box, orient="horizontal")
+        hs.pack(side="bottom", fill="x")
+        hcv = tk.Canvas(box, bg=BG, highlightthickness=0, height=44)
+        hcv.pack(side="top", fill="x", padx=(0, 12))
+        vs = ttk.Scrollbar(box, orient="vertical")
+        vs.pack(side="right", fill="y")
+        cv = tk.Canvas(box, bg=BG, highlightthickness=0)
+        cv.pack(side="left", fill="both", expand=True)
+        cv.configure(yscrollcommand=vs.set, xscrollcommand=hs.set)
+        vs.configure(command=cv.yview)
+        hs.configure(command=lambda *a: (cv.xview(*a), hcv.xview(*a)))
+        head = tk.Frame(hcv, bg=LINE)
+        grid = tk.Frame(cv, bg=LINE)
+        hcv.create_window((0, 0), window=head, anchor="nw")
+        cv.create_window((0, 0), window=grid, anchor="nw")
+        SCROLLERS[str(cv)] = cv
+
+        def cell(parent, r, c, text, **kw):
+            lb = tk.Label(parent, text=text, padx=6, pady=4, font=kw.pop("font", ("Segoe UI", 8)), **kw)
+            lb.grid(row=r, column=c, sticky="nsew", padx=(0, 1), pady=(0, 1))
+            return lb
+
+        ncol = len(self.stages) + 2
+        hdr = [spaced("помещение")] + self.stages + ["Актов"]
+        for j, t in enumerate(hdr):
+            cell(head, 0, j, t, bg=CARD, fg=MUTED, anchor="w" if j == 0 else "center",
+                 wraplength=self.CELL_W - 10 if j else 0,
+                 font=("Segoe UI", 7 if j == 0 else 8, "bold"))
+        widths = [self.ROOM_W] + [self.CELL_W] * (ncol - 1)
+        for i, room in enumerate(self.rooms, 1):
+            cell(grid, i, 0, self.labels.get(room, room), bg=CARD, fg=TEXT, anchor="w", justify="left",
+                 wraplength=self.ROOM_W - 12, font=("Segoe UI", 9))
+            n = 0
+            for j, st in enumerate(self.stages, 1):
+                acts = self.table[room].get(st, [])
+                n += len(acts)
+                if acts:
+                    txt = "\n".join(f'№ {a["act_no"]}' + (f'  {short_date(a.get("end"))}' if a.get("end") else "")
+                                    for a in acts[:3]) + ("\n…" if len(acts) > 3 else "")
+                    lb = cell(grid, i, j, txt, bg=DONE_BG, fg=SAVED, cursor="hand2", justify="left")
+                else:
+                    lb = cell(grid, i, j, "—", bg=FIELD, fg=LINE)
+                lb.bind("<Enter>", lambda e, rm=room, s=st: self.show(rm, s))
+                lb.bind("<Button-1>", lambda e, rm=room: self.open_room(rm))
+            cell(grid, i, len(self.stages) + 1, str(n), bg=CARD, fg=ACCENT, font=(SERIF, 10, "bold"))
+
+        # одинаковая ширина колонок у шапки и таблицы
+        head.update_idletasks()
+        for j in range(ncol):
+            w = max(widths[j], head.grid_bbox(j, 0)[2], grid.grid_bbox(j, 1, j, len(self.rooms))[2])
+            head.columnconfigure(j, minsize=w)
+            grid.columnconfigure(j, minsize=w)
+        head.update_idletasks()
+        hcv.configure(height=head.winfo_reqheight(), scrollregion=(0, 0, head.winfo_reqwidth(), 0))
+        cv.configure(scrollregion=(0, 0, grid.winfo_reqwidth(), grid.winfo_reqheight()))
+
+    def show(self, room, st):
+        acts = self.table[room].get(st, [])
+        head = f"{self.labels.get(room, room)}  ·  {st}:  "
+        if not acts:
+            self.info.configure(text=head + "акта пока нет", fg=MUTED)
+            return
+        self.info.configure(fg=TEXT, text=head + "\n" + "\n".join(
+            f'№ {a["act_no"]}  ({a.get("start", "")}–{a.get("end", "")})  {work_part(a["works"])}'
+            for a in acts))
+
+    def open_room(self, room):
+        reg = RegistryDialog(self.app)
+        reg.q.set(room)
+
+    def export(self):
+        p = filedialog.asksaveasfilename(parent=self, defaultextension=".xlsx",
+                                         filetypes=[("Excel", "*.xlsx")], initialfile="Сводная по помещениям.xlsx")
+        if not p:
+            return
+        try:
+            export_summary(self.rooms, self.stages, self.table, self.labels, p)
+        except PermissionError:
+            messagebox.showerror("Сводная", "Файл открыт в Excel. Закройте его и повторите.", parent=self)
+            return
+        self.app.flash_saved(f"✓  Сводная сохранена: {Path(p).name}")
+        if hasattr(os, "startfile"):
+            os.startfile(p)
+
+
+def export_summary(rooms, stages, table, labels, path):
+    """Сводная в Excel: помещения по строкам, этапы по столбцам, выполненные — зелёным."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Сводная"
+    ws.append(["Помещение"] + stages + ["Актов"])
+    thin = Side(style="thin", color="D9CFBE")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    for c in ws[1]:
+        c.font = Font(bold=True, color="FFFFFF")
+        c.fill = PatternFill("solid", fgColor="1B1813")
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        c.border = border
+    done = PatternFill("solid", fgColor="E4EEE2")
+    for room in rooms:
+        row = [labels.get(room, room)]
+        n = 0
+        for st in stages:
+            acts = table[room].get(st, [])
+            n += len(acts)
+            row.append("\n".join(f'№ {a["act_no"]}' + (f' ({a["end"]})' if a.get("end") else "") for a in acts))
+        ws.append(row + [n])
+        for j, c in enumerate(ws[ws.max_row]):
+            c.alignment = Alignment(vertical="top", wrap_text=True, horizontal="left" if j == 0 else "center")
+            c.border = border
+            if 0 < j <= len(stages) and c.value:
+                c.fill = done
+                c.font = Font(color="44705B")
+    ws.column_dimensions["A"].width = 34
+    for j in range(2, len(stages) + 3):
+        ws.column_dimensions[ws.cell(row=1, column=j).column_letter].width = 15
+    ws.row_dimensions[1].height = 42
+    ws.freeze_panes = "B2"
+    wb.save(path)
+
+
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -940,6 +1099,7 @@ class App(tk.Tk):
         ttk.Button(foot, text="✦  Следующий акт", command=lambda: NextActDialog(self)).pack(side="left")
         ttk.Button(foot, text="Реестр актов", command=lambda: RegistryDialog(self)).pack(
             side="left", padx=6)
+        ttk.Button(foot, text="Сводная", command=lambda: SummaryDialog(self)).pack(side="left")
         self.saved_lbl = tk.Label(foot, text="", bg=BG, fg=SAVED, font=("Segoe UI", 10, "bold"))
         self.saved_lbl.pack(side="right", padx=12)
 
