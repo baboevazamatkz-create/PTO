@@ -534,6 +534,25 @@ class Knowledge:
         return (f'ТОО «АКВАСЕРВИС»: «Альбом помещения {p["name"]} № {p["album_no"]}, {p["block"]}, '
                 f'{p["floor"]}. ТХ, {sheets_text(nums)}».')
 
+    def room_location(self, room):
+        """Строка помещения для акта: из последнего акта этого помещения, иначе — номер и этаж из ключа."""
+        single = [r for r in self.room_acts(room) if self.keys(r) == [room]]
+        if single:
+            return location_part(single[-1]["works"])
+        if not room:
+            return ""
+        fl = self.room_floor(room)
+        return f"Помещение № {key_no(room)}" + (f" ({fl} этаж)" if fl else "") + " отм. ___ оси ___."
+
+    def album_docs(self, room, work=""):
+        """Проект для акта: альбом помещения и лист по виду работ (если лист не найден — «лист ___»)."""
+        p = self.project["rooms"].get(room)
+        if not p:
+            return ""
+        return self.project_docs(room, work) or \
+            (f'ТОО «АКВАСЕРВИС»: «Альбом помещения {p["name"]} № {p["album_no"]}, {p["block"]}, '
+             f'{p["floor"]}. ТХ, лист ___».')
+
     def typical_work(self, stage, room=""):
         """Самое частое наименование работ этапа — в первую очередь у помещений того же типа."""
         kind = self.room_kind(room) if room else ""

@@ -10,8 +10,8 @@ from pathlib import Path
 from tkinter import ttk, filedialog, messagebox, simpledialog, font as tkfont
 
 from generator import base_dir, generate
-from learn import (Knowledge, act_num, import_folder, key_no, split_materials, stage_of,
-                   work_part)
+from learn import (Knowledge, act_num, import_folder, key_no, location_part, split_materials,
+                   stage_of, work_part)
 
 APP_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
 # Данные — в скрытой папке .data рядом с программой: не видно, переносится вместе с .exe
@@ -55,7 +55,7 @@ def spaced(text):
     return "\u200a".join(text.upper())
 
 DEFAULT = {
-    "room": "", "act_no": "", "works": "", "docs": "", "materials_text": "",
+    "room": "", "act_no": "", "works": "", "loc": "", "docs": "", "materials_text": "",
     "start": "", "end": "", "next_works": "",
     "reps": [],
 }
@@ -1116,12 +1116,21 @@ class App(tk.Tk):
 
         # 3. работы
         c = section("К освидетельствованию предъявлены работы")
-        self.works = text_field(c, 2, data["works"])
+        self.works = text_field(c, 2, "")
         self.works.pack(fill="x")
+        locrow = tk.Frame(c, bg=CARD)
+        locrow.pack(fill="x", pady=(4, 0))
+        tk.Label(locrow, text="помещение в акте:", bg=CARD, fg=MUTED, font=("Segoe UI", 8)).pack(side="left")
+        self.loc_var = tk.StringVar()
+        ttk.Entry(locrow, textvariable=self.loc_var).pack(side="left", fill="x", expand=True, padx=(6, 0))
+        self.works.bind("<KeyRelease>", lambda e: self.after_idle(self.docs_autofill), add="+")
 
         c = section("Работы выполнены по проектной документации")
-        self.docs = text_field(c, 2, data["docs"])
+        self.docs = text_field(c, 2, "")
         self.docs.pack(fill="x")
+        tk.Label(c, text="Альбом и лист подставляются по помещению и виду работ — листы можно поправить",
+                 bg=CARD, fg=MUTED, font=("Segoe UI", 8)).pack(anchor="w", pady=(2, 0))
+        self._docs_auto = ""
 
         # 4. материалы
         c = section("При выполнении работ применены")
@@ -1148,14 +1157,15 @@ class App(tk.Tk):
         self.next_works.pack(fill="x")
 
         # подсказки: всё, кроме самих работ, подбирается по введённым работам
-        k, works = self.know, lambda: self.works.get("1.0", "end")
-        Suggest(self.works, lambda t: k.suggest_works(t))
+        k, works = self.know, self.full_works
+        Suggest(self.works, lambda t: k.work_types(t, self.cur_room), on_pick=lambda v: self.docs_autofill())
         Suggest(self.docs, lambda t: filter_typed(k.suggest_docs(works()), t))
         Suggest(self.materials, lambda t: filter_typed(
             k._uniq([r["materials"] for r in k.related(works())], 10), t))
         Suggest(self.next_works, lambda t: filter_typed(k.suggest_next(works()), t))
         Suggest.install(self)
         self.room_refresh()
+        self.apply_work_fields(data)
 
     # ---------- помещение
     def room_refresh(self):
@@ -1173,6 +1183,41 @@ class App(tk.Tk):
         lbl = self.room_var.get()
         self.cur_room = next((k for k, v in self.room_labels.items() if v == lbl), "")
         self.room_draw()
+        self.loc_var.set(self.know.room_location(self.cur_room))      # помещение в акт — само
+        self.docs_autofill(force=True)
+
+    # ---------- работы без помещения: помещение и проект подставляются сами
+    def full_works(self):
+        """Работы для акта: текст работ + строка помещения."""
+        w = cap(self.works.get("1.0", "end")).rstrip(" .")
+        loc = self.loc_var.get().strip()
+        if not w:
+            return loc
+        return f"{w}. {loc}" if loc and "помещени" not in w.lower() else w + "."
+
+    def docs_autofill(self, force=False):
+        """Проект: альбом помещения и лист по виду работ. Если пользователь правил поле — не трогаем."""
+        if not self.cur_room:
+            return
+        cur = self.docs.get("1.0", "end").strip()
+        if not (force or not cur or cur == self._docs_auto):
+            return
+        new = self.know.album_docs(self.cur_room, self.full_works())
+        if new:
+            self.docs.delete("1.0", "end")
+            self.docs.insert("1.0", new)
+            self._docs_auto = new
+
+    def apply_work_fields(self, d):
+        """Работы из акта/черновика: текст работ — в поле, «Помещение № … оси …» — в строку помещения."""
+        works = d.get("works", "")
+        loc = d.get("loc") or location_part(works)
+        self.works.delete("1.0", "end")
+        self.works.insert("1.0", work_part(works) if location_part(works) else works)
+        self.loc_var.set(loc or (self.know.room_location(self.cur_room) if self.cur_room else ""))
+        self.docs.delete("1.0", "end")
+        self.docs.insert("1.0", d.get("docs", ""))
+        self._docs_auto = d.get("docs", "")
 
     def room_draw(self):
         for w in self.chips.winfo_children():
@@ -1392,7 +1437,8 @@ class App(tk.Tk):
     def apply_draft(self, d):
         """Черновик из «Следующего акта» — в поля формы; подписанты остаются как есть."""
         cur = self.collect()
-        self.apply({**cur, **{k: v for k, v in d.items() if k in DEFAULT}})
+        self.apply({**cur, **{k: v for k, v in d.items() if k in DEFAULT},
+                    "loc": location_part(d.get("works", "")) or cur["loc"]})
         self.flash_saved(f"✦  Черновик по акту № {d.get('template', '?')}")
 
     def apply_record(self, r):
@@ -1401,7 +1447,7 @@ class App(tk.Tk):
         self.apply({**cur, "act_no": r.get("act_no", ""), "works": r.get("works", ""),
                     "docs": r.get("docs", ""), "materials_text": r.get("materials", ""),
                     "next_works": r.get("next_works", ""), "start": r.get("start", ""),
-                    "end": r.get("end", "")})
+                    "end": r.get("end", ""), "loc": location_part(r.get("works", ""))})
 
     def open_materials(self):
         MaterialsDialog(self)
@@ -1410,7 +1456,8 @@ class App(tk.Tk):
     def collect(self):
         self.rep_read()
         g = lambda t: cap(t.get("1.0", "end"))
-        return {"room": self.cur_room, "act_no": self.act_no.get().strip(), "works": g(self.works), "docs": g(self.docs),
+        return {"room": self.cur_room, "act_no": self.act_no.get().strip(), "works": g(self.works),
+                "loc": self.loc_var.get().strip(), "docs": g(self.docs),
                 "materials_text": g(self.materials),
                 "start": self.start.get().strip(), "end": self.end.get().strip(),
                 "next_works": g(self.next_works),
@@ -1421,19 +1468,20 @@ class App(tk.Tk):
         self.act_no.set(d["act_no"])
         if d.get("materials_sel") and not d.get("materials_text"):
             d["materials_text"] = self.old_materials(d["materials_sel"])
-        for t, k in ((self.works, "works"), (self.docs, "docs"), (self.next_works, "next_works"),
-                     (self.materials, "materials_text")):
+        for t, k in ((self.next_works, "next_works"), (self.materials, "materials_text")):
             t.delete("1.0", "end")
             t.insert("1.0", d[k])
         self.start.set(d["start"])
         self.end.set(d["end"])
         self.reps_data = [dict(r) for r in d["reps"]]
         self.rep_draw()
-        keys = self.know.keys({"works": d["works"]})
-        room = d.get("room") or (keys[0] if keys else "")
+        keys = self.know.keys({"works": d["works"] + " " + d.get("loc", "")})
+        room = (keys[0] if keys else "") or d.get("room")
         if room and hasattr(self, "room_cb"):
             self.cur_room = room
             self.room_refresh()
+        if hasattr(self, "loc_var"):
+            self.apply_work_fields(d)
 
     def open_project(self):
         p = filedialog.askopenfilename(filetypes=[("Проект акта", "*.json")])
@@ -1449,6 +1497,10 @@ class App(tk.Tk):
 
     def make(self):
         d = self.collect()
+        d["works"] = self.full_works()                 # в акт — с помещением
+        if not d["works"]:
+            messagebox.showwarning("Акт", "Заполните предъявленные работы.")
+            return
         d["materials"] = [d["materials_text"]]
         same = [r for r in self.know.recs if r.get("act_no") == d["act_no"] and r["works"] != d["works"]]
         if d["act_no"] and same and not messagebox.askyesno(
