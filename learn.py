@@ -623,9 +623,10 @@ class Knowledge:
         works = (wp.rstrip(" .") + ". " + loc) if loc else wp
         # проект — из актов этого помещения, лист — от самых похожих работ
         docs_src = sorted(room_acts, key=lambda r: -sim(work, work_part(r["works"])))
-        # лист: из похожего акта этого же помещения (как уже ссылались), иначе — по ведомости проекта
+        # лист — по ведомости альбома ЭТОГО помещения: на каком листе нарисован этот вид работ.
+        # Прошлые акты — только если помещения нет в проекте или в альбоме не нашлось подходящего листа.
         same = next((r for r in docs_src if r.get("docs") and sim(work, work_part(r["works"])) >= 0.5), None)
-        docs = (same or {}).get("docs") or self.project_docs(room, works) \
+        docs = self.project_docs(room, works) or (same or {}).get("docs") \
             or next((r["docs"] for r in docs_src if r.get("docs")), tpl.get("docs", ""))
         ends = [to_date(r.get("end", "")) for r in room_acts]
         ends = [d for d in ends if d]
