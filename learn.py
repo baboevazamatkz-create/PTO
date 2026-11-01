@@ -202,8 +202,46 @@ def sim(a, b):
     return len(a & b) / len(a | b) if a and b else 0.0
 
 
+# ---------- проект: какие листы альбома ссылать для вида работ
+def project_sheets(sheets, work, stage):
+    """Номера листов альбома, подходящих к работам (по названиям листов)."""
+    w = work.lower()
+    want = []
+    floor = re.search(r"\bпол(а|у|ов)?\b|стяжк|трап|фараде", w)
+    if floor:
+        want.append(r"план пол(а|ов)\b")
+    if re.search(r"нагрев|греющ", w):
+        want.append(r"нагревательн")
+    if re.search(r"лежак|сиден|седуш|спин", w):
+        want.append(r"лежак|сиден")
+    if re.search(r"полк", w):
+        want.append(r"полков")
+    if re.search(r"купол", w):
+        want.append(r"купол")
+    if re.search(r"стен|потол|купол", w) and stage in ("Выравнивание, штукатурка", "Гидроизоляция"):
+        want.append(r"разрез")                    # стены/потолок/купол в актах ссылаются на разрезы
+    elif re.search(r"потол", w):
+        want.append(r"каркас.*потол|потол.*каркас" if stage == "Каркас" else r"план потолка")
+    if re.search(r"стен", w) and stage in ("Каркас", "Теплоизоляция", "Обшивка ГКЛ/СМЛ"):
+        want.append(r"стенов")
+    if stage == "Электрика":
+        want += [r"освещени|подсветк", r"инженерн"]
+    if stage in ("Вентиляция", "Трапы, сантехника"):
+        want.append(r"инженерн")
+    if not want and stage in ("Каркас", "Теплоизоляция", "Обшивка ГКЛ/СМЛ"):
+        want.append(r"стенов|каркас")
+    found = [no for no, name in sheets.items()
+             if any(re.search(rx, name.lower()) for rx in want) and not re.search(r"специфик|общие", name.lower())]
+    return found[:5]
+
+
+def sheets_text(nums):
+    return ("лист " if len(nums) == 1 else "листы ") + ", ".join(nums)
+
+
 class Knowledge:
-    def __init__(self, records):
+    def __init__(self, records, project=None):
+        self.project = project if project and project.get("rooms") else {"rooms": {}}
         self.recs = []
         seen = set()
         for r in records:
@@ -319,7 +357,31 @@ class Knowledge:
             label = room + (f" — {name}" if name else "") + (f", {floor.group(1)} этаж" if floor else "")
             if len(label) > len(out.get(room, "")):
                 out[room] = label
+        for room, p in self.project["rooms"].items():   # проект важнее: точное название, все помещения
+            out[room] = f'{room} — {p["name"]}, {re.sub(r"-й", "", p["floor"])}'
         return dict(sorted(out.items(), key=lambda x: int(x[0])))
+
+    def planned(self, room):
+        return list(self.project["rooms"].get(room, {}).get("stages", []))
+
+    def project_docs(self, room, work):
+        p = self.project["rooms"].get(room)
+        if not p:
+            return ""
+        nums = project_sheets(p["sheets"], work, stage_of(work))
+        if not nums:
+            return ""
+        return (f'ТОО «АКВАСЕРВИС»: «Альбом помещения {p["name"]} № {p["album_no"]}, {p["block"]}, '
+                f'{p["floor"]}. ТХ, {sheets_text(nums)}».')
+
+    def typical_work(self, stage):
+        """Самое частое наименование работ этапа в базе."""
+        c = {}
+        for r in self.recs:
+            if stage_of(r["works"]) == stage:
+                wp = work_part(r["works"])
+                c[wp] = c.get(wp, 0) + 1
+        return max(c, key=c.get) if c else stage
 
     def best_work(self, text, exclude=""):
         """Наименование работ из базы, ближе всего к тексту (по смыслу слов)."""
@@ -336,11 +398,16 @@ class Knowledge:
     def next_stage(self, room):
         """Следующий этап для помещения: «последующие работы» его последнего акта -> вид работ."""
         acts = self.room_acts(room)
-        if not acts:
-            return ""
-        last = acts[-1]
-        return self.best_work(last.get("next_works", ""), exclude=work_part(last["works"])) \
-            or last.get("next_works", "")
+        done = {stage_of(r["works"]) for r in acts}
+        todo = [s for s in self.planned(room) if s not in done]
+        if acts:
+            last = acts[-1]
+            nxt = self.best_work(last.get("next_works", ""), exclude=work_part(last["works"]))
+            if nxt and (not todo or stage_of(nxt) in todo or stage_of(nxt) not in self.planned(room)):
+                return nxt
+        if todo:                                   # по проекту: первый этап, по которому акта ещё нет
+            return self.typical_work(todo[0])
+        return acts[-1].get("next_works", "") if acts else ""
 
     def work_types(self, typed="", room="", limit=15):
         """Виды работ (без помещения) для подсказок: сначала из актов этого помещения."""
@@ -366,9 +433,12 @@ class Knowledge:
         for cells in table.values():
             for acts in cells.values():
                 acts.sort(key=lambda r: act_num(r["act_no"]))
-        used = [s for s in STAGES if any(s in c for c in table.values())]
+        for room, p in self.project["rooms"].items():
+            table.setdefault(room, {})
+        plan = {room: set(self.planned(room)) for room in table}
+        used = [s for s in STAGES if any(s in c for c in table.values()) or any(s in pl for pl in plan.values())]
         rooms = sorted(table, key=int)
-        return rooms, used, table
+        return rooms, used, table, plan
 
     def next_act_no(self):
         return str(max((act_num(r["act_no"]) for r in self.recs), default=0) + 1)
@@ -385,12 +455,21 @@ class Knowledge:
         tpl = max(self.recs, key=score, default=None)
         if not tpl:
             return {}
-        loc = location_part(room_acts[-1]["works"]) if room_acts else location_part(tpl["works"])
+        p = self.project["rooms"].get(room)
+        if room_acts:
+            loc = location_part(room_acts[-1]["works"])
+        elif p:                                    # помещение без актов: этаж из проекта, отметку и оси — вручную
+            loc = f'Помещение № {room} ({re.sub(r"-й", "", p["floor"])}) отм. ___ оси ___.'
+        else:
+            loc = location_part(tpl["works"])
         wp = work_part(tpl["works"]) if sim(work, work_part(tpl["works"])) > 0.3 else work
         works = (wp.rstrip(" .") + ". " + loc) if loc else wp
         # проект — из актов этого помещения, лист — от самых похожих работ
         docs_src = sorted(room_acts, key=lambda r: -sim(work, work_part(r["works"])))
-        docs = next((r["docs"] for r in docs_src if r.get("docs")), tpl.get("docs", ""))
+        # лист: из похожего акта этого же помещения (как уже ссылались), иначе — по ведомости проекта
+        same = next((r for r in docs_src if r.get("docs") and sim(work, work_part(r["works"])) >= 0.5), None)
+        docs = (same or {}).get("docs") or self.project_docs(room, works) \
+            or next((r["docs"] for r in docs_src if r.get("docs")), tpl.get("docs", ""))
         ends = [to_date(r.get("end", "")) for r in room_acts]
         ends = [d for d in ends if d]
         start = (max(ends) + timedelta(days=1)).strftime("%d.%m.%Y") if ends else ""

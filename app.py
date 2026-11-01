@@ -22,10 +22,11 @@ if os.name == "nt":
 MAT_FILE = DATA_DIR / "materials.json"
 SIGN_FILE = DATA_DIR / "signers.json"
 LAST_FILE = DATA_DIR / "last_project.json"
+PROJ_FILE = DATA_DIR / "project.json"            # проект: помещения, листы альбомов, этапы
 KNOW_FILE = DATA_DIR / "knowledge.json"          # акты, которые программа изучила у пользователя
 
 # файлы прежних версий, лежавшие рядом с программой, переносятся в .data
-for _f in (MAT_FILE, SIGN_FILE, LAST_FILE, KNOW_FILE):
+for _f in (MAT_FILE, SIGN_FILE, LAST_FILE, KNOW_FILE, PROJ_FILE):
     _old = APP_DIR / _f.name
     if _old.exists() and not _f.exists():
         try:
@@ -40,7 +41,8 @@ ROLES = ["Заказчика", "Подрядчика", "Технического
 BG, CARD, FIELD, LINE, SOFT = "#F4EFE6", "#FBF9F5", "#FFFFFF", "#E4DDD0", "#F1EADD"
 TEXT, MUTED, ACCENT, ACCENT_D = "#1B1813", "#8A8277", "#9A7B44", "#7E6334"
 SAVED = "#44705B"
-DONE_BG = "#E4EEE2"               # ячейка сводной: акт есть                 # изумрудный из палитры Altyn
+DONE_BG = "#E4EEE2"               # ячейка сводной: акт есть
+NEED_BG = "#FBEFD9"               # по проекту нужен, акта ещё нет                 # изумрудный из палитры Altyn
 INK_ON, CHAMPAGNE, HOVER = "#F6F2EA", "#C8A86B", "#EFE3CB"
 PAPER_TOP, PAPER_BOTTOM = "#F6F2EA", "#EDE6DA"
 SERIF = "Georgia"
@@ -896,12 +898,13 @@ class SummaryDialog(tk.Toplevel):
         top.pack(fill="x")
         tk.Label(top, text="Сводная по помещениям", bg=BG, fg=TEXT, font=(SERIF, 15, "bold")).pack(side="left")
         ttk.Button(top, text="Экспорт в Excel", style="Accent.TButton", command=self.export).pack(side="right")
-        self.info = tk.Label(self, text="Наведите на ячейку — внизу появятся акты. Клик — открыть в реестре.",
+        self.info = tk.Label(self, text="Наведите на ячейку — внизу появятся акты. Клик — открыть в реестре. "
+                                        "Правый клик по пустой ячейке — отметить «нужен акт» / снять отметку.",
                              bg=BG, fg=MUTED, anchor="w", justify="left", wraplength=1120,
                              font=("Segoe UI", 9))
         self.info.pack(side="bottom", fill="x", padx=18, pady=(4, 12))
 
-        self.rooms, self.stages, self.table = app.know.summary()
+        self.rooms, self.stages, self.table, self.plan = app.know.summary()
         self.labels = app.know.rooms()
         if not self.rooms:
             tk.Label(self, text="Реестр пуст — нажмите «Импорт актов».", bg=BG, fg=MUTED).pack(pady=40)
@@ -949,11 +952,17 @@ class SummaryDialog(tk.Toplevel):
                     txt = "\n".join(f'№ {a["act_no"]}' + (f'  {short_date(a.get("end"))}' if a.get("end") else "")
                                     for a in acts[:3]) + ("\n…" if len(acts) > 3 else "")
                     lb = cell(grid, i, j, txt, bg=DONE_BG, fg=SAVED, cursor="hand2", justify="left")
+                elif st in self.plan[room]:
+                    lb = cell(grid, i, j, "нужен", bg=NEED_BG, fg=ACCENT_D)
                 else:
                     lb = cell(grid, i, j, "—", bg=FIELD, fg=LINE)
                 lb.bind("<Enter>", lambda e, rm=room, s=st: self.show(rm, s))
                 lb.bind("<Button-1>", lambda e, rm=room: self.open_room(rm))
-            cell(grid, i, len(self.stages) + 1, str(n), bg=CARD, fg=ACCENT, font=(SERIF, 10, "bold"))
+                if not acts:
+                    lb.bind("<Button-3>", lambda e, rm=room, s=st, w=lb: self.toggle(rm, s, w))
+            need = len([s for s in self.plan[room] if not self.table[room].get(s)])
+            cell(grid, i, len(self.stages) + 1, str(n) + (f"\nнужно {need}" if need else ""),
+                 bg=CARD, fg=ACCENT, font=(SERIF, 10, "bold"))
 
         # одинаковая ширина колонок у шапки и таблицы
         head.update_idletasks()
@@ -965,11 +974,28 @@ class SummaryDialog(tk.Toplevel):
         hcv.configure(height=head.winfo_reqheight(), scrollregion=(0, 0, head.winfo_reqwidth(), 0))
         cv.configure(scrollregion=(0, 0, grid.winfo_reqwidth(), grid.winfo_reqheight()))
 
+    def toggle(self, room, st, w):
+        """Правый клик: этап нужен / не нужен в этом помещении (сохраняется в проекте)."""
+        proj = self.app.know.project.setdefault("rooms", {})
+        p = proj.setdefault(room, {"name": self.labels.get(room, room).split(" — ")[-1].split(",")[0],
+                                   "block": "1-й блок", "floor": "", "album_no": room, "sheets": {}, "stages": []})
+        stages = p.setdefault("stages", [])
+        if st in stages:
+            stages.remove(st)
+            self.plan[room].discard(st)
+            w.configure(text="—", bg=FIELD, fg=LINE)
+        else:
+            stages.append(st)
+            self.plan[room].add(st)
+            w.configure(text="нужен", bg=NEED_BG, fg=ACCENT_D)
+        self.app.save_project_data()
+
     def show(self, room, st):
         acts = self.table[room].get(st, [])
         head = f"{self.labels.get(room, room)}  ·  {st}:  "
         if not acts:
-            self.info.configure(text=head + "акта пока нет", fg=MUTED)
+            self.info.configure(text=head + ("по проекту нужен, акта ещё нет" if st in self.plan[room]
+                                             else "акта нет"), fg=MUTED)
             return
         self.info.configure(fg=TEXT, text=head + "\n" + "\n".join(
             f'№ {a["act_no"]}  ({a.get("start", "")}–{a.get("end", "")})  {work_part(a["works"])}'
@@ -985,7 +1011,7 @@ class SummaryDialog(tk.Toplevel):
         if not p:
             return
         try:
-            export_summary(self.rooms, self.stages, self.table, self.labels, p)
+            export_summary(self.rooms, self.stages, self.table, self.labels, p, self.plan)
         except PermissionError:
             messagebox.showerror("Сводная", "Файл открыт в Excel. Закройте его и повторите.", parent=self)
             return
@@ -994,7 +1020,7 @@ class SummaryDialog(tk.Toplevel):
             os.startfile(p)
 
 
-def export_summary(rooms, stages, table, labels, path):
+def export_summary(rooms, stages, table, labels, path, plan=None):
     """Сводная в Excel: помещения по строкам, этапы по столбцам, выполненные — зелёным."""
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -1011,18 +1037,24 @@ def export_summary(rooms, stages, table, labels, path):
         c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
         c.border = border
     done = PatternFill("solid", fgColor="E4EEE2")
+    need = PatternFill("solid", fgColor="FBEFD9")
+    plan = plan or {}
     for room in rooms:
         row = [labels.get(room, room)]
         n = 0
         for st in stages:
             acts = table[room].get(st, [])
             n += len(acts)
-            row.append("\n".join(f'№ {a["act_no"]}' + (f' ({a["end"]})' if a.get("end") else "") for a in acts))
+            row.append("\n".join(f'№ {a["act_no"]}' + (f' ({a["end"]})' if a.get("end") else "") for a in acts)
+                       or ("нужен" if st in plan.get(room, ()) else ""))
         ws.append(row + [n])
         for j, c in enumerate(ws[ws.max_row]):
             c.alignment = Alignment(vertical="top", wrap_text=True, horizontal="left" if j == 0 else "center")
             c.border = border
-            if 0 < j <= len(stages) and c.value:
+            if 0 < j <= len(stages) and c.value == "нужен":
+                c.fill = need
+                c.font = Font(color="7E6334")
+            elif 0 < j <= len(stages) and c.value:
                 c.fill = done
                 c.font = Font(color="44705B")
     ws.column_dimensions["A"].width = 34
@@ -1052,7 +1084,7 @@ class App(tk.Tk):
             data["reps"] = [{"on": True, "role": "", "org": "", "position": "", "name": ""}]
         self.chosen = set()
         seed = load_json(base_dir() / "knowledge_seed.json", [])
-        self.know = Knowledge(seed + load_json(KNOW_FILE, []))
+        self.know = Knowledge(seed + load_json(KNOW_FILE, []), load_json(PROJ_FILE, {}))
         if data.get("materials_sel") and not data.get("materials_text"):
             data["materials_text"] = self.old_materials(data["materials_sel"])
         self.rows = []          # [{"on": BooleanVar, "var": StringVar, "rep": dict, "cb": Combobox}]
@@ -1085,7 +1117,7 @@ class App(tk.Tk):
         head.create_text(21, 37, text=spaced("освидетельствование скрытых работ"), anchor="w",
                          fill=MUTED, font=("Segoe UI", 7, "bold"))
         btn_wins = []
-        for t, c in (("Импорт актов", self.import_acts), ("Подписанты", lambda: SignersDialog(self)),
+        for t, c in (("Импорт ▾", self.import_menu), ("Подписанты", lambda: SignersDialog(self)),
                      ("Открыть", self.open_project), ("Сохранить", self.save_project)):
             b = ttk.Button(head, text=t, style="Head.TButton", command=c)
             btn_wins.append((b, head.create_window(0, 25, window=b, anchor="e")))
@@ -1255,6 +1287,30 @@ class App(tk.Tk):
         by = {m["name"]: m for m in self.mats}
         return " ".join(mat_text(by[n]) for n in names if n in by)
 
+    def import_menu(self):
+        m = tk.Menu(self, tearoff=0)
+        m.add_command(label="Акты из папки (.docx)…", command=self.import_acts)
+        m.add_command(label="Проект (файл .json)…", command=self.import_project)
+        m.tk_popup(self.winfo_pointerx(), self.winfo_pointery())
+
+    def import_project(self):
+        p = filedialog.askopenfilename(title="Файл проекта", filetypes=[("Проект", "*.json")])
+        if not p:
+            return
+        proj = load_json(p, {})
+        if not proj.get("rooms"):
+            messagebox.showerror("Проект", "Это не файл проекта.")
+            return
+        cur = load_json(PROJ_FILE, {"rooms": {}})
+        cur.setdefault("rooms", {}).update(proj["rooms"])      # новые альбомы дополняют прежние
+        save_json(PROJ_FILE, cur)
+        self.know.project = cur
+        messagebox.showinfo("Проект", f'Загружено помещений: {len(proj["rooms"])}\n'
+                                      f'Всего в проекте: {len(cur["rooms"])}')
+
+    def save_project_data(self):
+        save_json(PROJ_FILE, self.know.project)
+
     def import_acts(self):
         folder = filedialog.askdirectory(title="Папка с актами (.docx, включая подпапки)")
         if not folder:
@@ -1285,7 +1341,7 @@ class App(tk.Tk):
         """Черновик из «Следующего акта» — в поля формы; подписанты остаются как есть."""
         cur = self.collect()
         self.apply({**cur, **{k: v for k, v in d.items() if k in DEFAULT}})
-        self.flash_saved(f"✦  Черновик по акту № {d.get('template', '?')} — проверьте")
+        self.flash_saved(f"✦  Черновик по акту № {d.get('template', '?')}")
 
     def apply_record(self, r):
         """Акт из реестра — в форму (например, чтобы сделать похожий)."""
