@@ -1,8 +1,35 @@
 """База знаний из прошлых актов: извлечение полей и связанные подсказки."""
 import re
+from datetime import date, timedelta
 from pathlib import Path
 
 from docx import Document
+
+MONTHS = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля",
+          "августа", "сентября", "октября", "ноября", "декабря"]
+DATE_RE = r"«\s*(\d{1,2})\s*»\s*([а-яё]+)\s*(\d{4})"
+
+
+def _date(m):
+    """Совпадение «18» мая 2026 -> '18.05.2026'."""
+    try:
+        return f"{int(m.group(1)):02d}.{MONTHS.index(m.group(2).lower()) + 1:02d}.{m.group(3)}"
+    except (ValueError, AttributeError):
+        return ""
+
+
+def to_date(s):
+    try:
+        d, m, y = (int(x) for x in s.split("."))
+        return date(y, m, d)
+    except (ValueError, AttributeError):
+        return None
+
+
+def act_num(act_no):
+    m = re.match(r"\s*(\d+)", act_no or "")
+    return int(m.group(1)) if m else 0
+
 
 FIELD_STOPS = ("(наименование", "наименование", "при наличии", "должность, фамилия")
 
@@ -34,7 +61,12 @@ def parse_act(path):
         paras = [p.text.strip() for p in Document(str(path)).paragraphs]
     except Exception:
         return None
-    rec = {"act_no": "", "works": "", "docs": "", "materials": "", "next_works": ""}
+    rec = {"act_no": "", "works": "", "docs": "", "materials": "", "next_works": "",
+           "start": "", "end": "", "signers": [], "file": str(path), "source": "импорт"}
+    text = " ".join(paras)
+    rec["start"] = _date(re.search(r"начал\w*\s+работ\s*" + DATE_RE, text, re.I))
+    rec["end"] = _date(re.search(r"окончани\w*\s+работ\s*" + DATE_RE, text, re.I))
+    in_signs = False
     for i, t in enumerate(paras):
         lt = t.lower()
         if not rec["act_no"] and lt.replace(" ", "").startswith("акт№"):
@@ -46,6 +78,12 @@ def parse_act(path):
         elif "работ применены:" in lt and not rec["materials"]:
             rec["materials"] = _collect(paras, i, _after(t, "работ применены:"),
                                         FIELD_STOPS + ("4", "при выполнении работ отсутств", "даты"))
+        elif lt.startswith("решение комиссии"):
+            in_signs = True
+        elif in_signs and "/" in t:
+            name = _clean(t.rsplit("/", 1)[1]).strip(" ._")
+            if name and name not in rec["signers"]:
+                rec["signers"].append(name)
         elif lt.startswith("на основании изложенного") and not rec["next_works"]:
             rest = _after(t, "(монтажу)") or ""
             rest = re.sub(r"наименование последующих работ и конструкций:?", "", rest).strip(" :")
@@ -90,7 +128,8 @@ def split_materials(text):
 
 
 # ---------- признаки для сравнения
-ROOM_RE = re.compile(r"помещени[еяй]\s*№?\s*(\d+)", re.I)
+ROOM_RE = re.compile(r"помещени[еяй]\s*(?:№\s*)*(\d+)", re.I)
+ROOM_NAME_RE = re.compile(r"помещения\s+(.+?)\s*№\s*(\d+)", re.I)
 WORD_RE = re.compile(r"[а-яёa-z]{3,}", re.I)
 STOP = {"помещение", "этаж", "оси", "отм", "мм", "толщиной", "для", "под", "при", "все", "что"}
 
@@ -136,6 +175,18 @@ class Knowledge:
             if key not in seen and r.get("works"):
                 seen.add(key)
                 self.recs.append(r)
+
+    def upsert(self, rec):
+        """Добавить акт или обновить уже известный (тот же номер и работы). True — если новый."""
+        key = (rec.get("act_no"), rec.get("works"))
+        for i, r in enumerate(self.recs):
+            if (r.get("act_no"), r.get("works")) == key:
+                self.recs[i] = {**r, **{k: v for k, v in rec.items() if v}}
+                return False
+        if rec.get("works"):
+            self.recs.append(rec)
+            return True
+        return False
 
     def add(self, rec):
         key = (rec.get("act_no"), rec.get("works"))
@@ -213,6 +264,89 @@ class Knowledge:
         for r in self.related(works)[:limit]:
             names += [m["name"] for m in split_materials(r["materials"])]
         return self._uniq(names, 30)
+
+    # ---------- помещения и цепочки работ
+    def room_acts(self, room):
+        """Акты помещения по возрастанию номера."""
+        return sorted((r for r in self.recs if room_of(r["works"]) == room), key=lambda r: act_num(r["act_no"]))
+
+    def rooms(self):
+        """{номер: подпись для списка}, например {'16': '16 — Русская парная, 2 этаж'}."""
+        out = {}
+        for r in self.recs:
+            room = room_of(r["works"])
+            if not room:
+                continue
+            name = next((m.group(1).strip(" «»") for m in ROOM_NAME_RE.finditer(r.get("docs", ""))
+                         if m.group(2) == room), "")
+            floor = re.search(r"\((\d+)\s*этаж", r["works"])
+            label = room + (f" — {name}" if name else "") + (f", {floor.group(1)} этаж" if floor else "")
+            if len(label) > len(out.get(room, "")):
+                out[room] = label
+        return dict(sorted(out.items(), key=lambda x: int(x[0])))
+
+    def best_work(self, text, exclude=""):
+        """Наименование работ из базы, ближе всего к тексту (по смыслу слов)."""
+        best, score = "", 0.0
+        for r in self.recs:
+            wp = work_part(r["works"])
+            if exclude and sim(wp, exclude) > 0.8:
+                continue
+            s = sim(text, wp) + (0.3 if text and text.lower()[:12] in wp.lower() else 0)
+            if s > score:
+                best, score = wp, s
+        return best if score > 0.15 else ""
+
+    def next_stage(self, room):
+        """Следующий этап для помещения: «последующие работы» его последнего акта -> вид работ."""
+        acts = self.room_acts(room)
+        if not acts:
+            return ""
+        last = acts[-1]
+        return self.best_work(last.get("next_works", ""), exclude=work_part(last["works"])) \
+            or last.get("next_works", "")
+
+    def work_types(self, typed="", room="", limit=15):
+        """Виды работ (без помещения) для подсказок: сначала из актов этого помещения."""
+        scored = {}
+        for r in self.recs:
+            wp = work_part(r["works"])
+            s = sim(typed, wp) if typed else 0.1
+            if typed and typed.lower() in wp.lower():
+                s += 0.5
+            if room and room_of(r["works"]) == room:
+                s += 0.05
+            scored[wp] = max(scored.get(wp, 0), s)
+        ranked = sorted(scored.items(), key=lambda x: -x[1])
+        return self._uniq([w for w, s in ranked if s > 0.05], limit)
+
+    def next_act_no(self):
+        return str(max((act_num(r["act_no"]) for r in self.recs), default=0) + 1)
+
+    def draft(self, room, work):
+        """Черновик акта на помещение по виду работ — из самых похожих прошлых актов."""
+        room_acts = self.room_acts(room)
+
+        def score(r):
+            wp = work_part(r["works"])
+            s = sim(work, wp) + (0.5 if work and work.lower() in wp.lower() else 0)
+            return s + (0.05 if room_of(r["works"]) == room else 0)   # помещение — только при равенстве
+
+        tpl = max(self.recs, key=score, default=None)
+        if not tpl:
+            return {}
+        loc = location_part(room_acts[-1]["works"]) if room_acts else location_part(tpl["works"])
+        wp = work_part(tpl["works"]) if sim(work, work_part(tpl["works"])) > 0.3 else work
+        works = (wp.rstrip(" .") + ". " + loc) if loc else wp
+        # проект — из актов этого помещения, лист — от самых похожих работ
+        docs_src = sorted(room_acts, key=lambda r: -sim(work, work_part(r["works"])))
+        docs = next((r["docs"] for r in docs_src if r.get("docs")), tpl.get("docs", ""))
+        ends = [to_date(r.get("end", "")) for r in room_acts]
+        ends = [d for d in ends if d]
+        start = (max(ends) + timedelta(days=1)).strftime("%d.%m.%Y") if ends else ""
+        return {"act_no": self.next_act_no(), "works": works, "docs": docs,
+                "materials_text": tpl.get("materials", ""), "next_works": tpl.get("next_works", ""),
+                "start": start, "end": "", "template": tpl.get("act_no", "")}
 
     def all_materials(self):
         out, seen = [], set()
