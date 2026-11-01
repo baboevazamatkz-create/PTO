@@ -270,9 +270,12 @@ def project_sheets(sheets, work, stage):
                                                        "Чистовая отделка"):
         want.append(r"разрез")                    # стены/потолок/купол в актах ссылаются на разрезы
     elif re.search(r"потол", w) and stage not in ("Электрика", "Вентиляция", "Трапы, сантехника"):
-        want.append(r"каркас.*потол|потол.*каркас" if stage == "Каркас" else r"план потолка")
+        want.append(r"каркас.*потол|потол.*каркас"
+                    if stage in ("Каркас", "Теплоизоляция", "Обшивка ГКЛ/СМЛ") else r"план потолка")
     if re.search(r"стен", w) and stage in ("Каркас", "Теплоизоляция", "Обшивка ГКЛ/СМЛ"):
         want.append(r"стенов")
+    if re.search(r"панел", w):
+        want.append(r"панел")
     if stage == "Дверные проёмы":
         want.append(r"маркировочн")               # проёмы и двери отмечены на маркировочном плане
     if stage == "Электрика":
@@ -283,6 +286,12 @@ def project_sheets(sheets, work, stage):
         want.append(r"стенов|каркас")
     found = [no for no, name in sheets.items()
              if any(re.search(rx, name.lower()) for rx in want) and not re.search(r"специфик|общие", name.lower())]
+    if stage != "Электрика":                      # листы подсветки/освещения — только для электрики
+        found = [no for no in found if not re.search(r"подсветк|освещени", sheets[no].lower())]
+    if stage == "Греющий кабель":                 # кабель — на плане прокладки нагревательных элементов
+        found = [no for no in found if "нагреват" in sheets[no].lower()] or found
+    if re.search(r"панел", w):                     # панели (Teplofom) — на листах панелей
+        found = [no for no in found if "панел" in sheets[no].lower()] or found
     if stage != "Чистовая отделка":               # для гидроизоляции и выравнивания хватает первого разреза
         cuts = [no for no in found if "разрез" in sheets[no].lower()]
         found = [no for no in found if no not in cuts[1:]]
