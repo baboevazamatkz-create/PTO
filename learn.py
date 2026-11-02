@@ -510,16 +510,54 @@ class Knowledge:
         return [(st, sorted(done.get(st, []), key=lambda r: act_num(r["act_no"])))
                 for st in STAGES if st in plan or st in done]
 
+    def room_folder(self, room, base):
+        """Папка помещения в базе: та, что УЖЕ есть (по актам этого помещения или по названию папки);
+        новая создаётся только если такой папки нет."""
+        base = Path(base)
+        no, floor = key_no(room), self.room_floor(room)
+        # 1) где уже лежат акты этого помещения (папку «Подписано» пропускаем)
+        dirs = {}
+        for r in self.room_acts(room):
+            f = Path(r.get("file", ""))
+            try:
+                f.relative_to(base)
+            except ValueError:
+                continue
+            d = f.parent
+            if "подпис" in d.name.lower():
+                d = d.parent
+            if self.keys(r) == [room]:                 # акт только на это помещение
+                dirs[d] = dirs.get(d, 0) + 1
+        if dirs:
+            return max(dirs, key=dirs.get)
+        # 2) папка с номером помещения внутри папки этажа («2 этаж/16 этаж 2», «2 этаж/16»)
+        room_rx = re.compile(rf"^\s*№?\s*0*{no}(?!\d)", re.I)
+        floor_rx = re.compile(rf"^\s*{floor}\s*(-?й\s*)?эт", re.I) if floor else None
+        try:
+            floors = [d for d in base.iterdir() if d.is_dir() and floor_rx and floor_rx.match(d.name)]
+        except OSError:
+            floors = []
+        for fd in floors:
+            for d in fd.iterdir():
+                if d.is_dir() and room_rx.match(d.name):
+                    return d
+        # 3) папка помещения где угодно на 2 уровня вниз, с этим этажом в названии
+        try:
+            for d in [x for x in base.iterdir() if x.is_dir()] + \
+                     [y for x in base.iterdir() if x.is_dir() for y in x.iterdir() if y.is_dir()]:
+                if room_rx.match(d.name) and (not floor or re.search(rf"эт\w*\.?\s*{floor}(?!\d)", d.name)):
+                    return d
+        except OSError:
+            pass
+        # 4) нет — создаём по образцу архива (в существующей папке этажа, если она есть)
+        fd = floors[0] if floors else base / (f"{floor} этаж" if floor else "Без этажа")
+        return fd / (f"{no} этаж {floor}" if floor else no)
+
     def file_path(self, rec, base, hint=""):
-        """База актов: <этаж> этаж / <пом> этаж <этаж> / АСР №<n> п.<пом> <работы>.docx — как в архиве."""
+        """База актов: папка помещения (существующая) / АСР №<n> п.<пом> <работы>.docx — как в архиве."""
         keys = self.keys(rec) or ([hint] if hint else [])
         room = keys[0] if keys else ""
-        floor = self.room_floor(room) if room else ""
-        no = key_no(room)
-        folder = Path(base)
-        if room:
-            folder = folder / (f"{floor} этаж" if floor else "Без этажа") / \
-                (f"{no} этаж {floor}" if floor else no)
+        folder = self.room_folder(room, base) if room else Path(base)
         rooms_txt = ", ".join(key_no(k) for k in keys)
         name = f'АСР №{rec["act_no"]}' + (f" п.{rooms_txt}" if rooms_txt else "") + " " + short_work(rec["works"])
         return folder / (safe_name(name) + ".docx")
