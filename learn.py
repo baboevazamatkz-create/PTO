@@ -320,15 +320,23 @@ def safe_name(t):
     return re.sub(r'[\\/:*?"<>|]+', " ", t).strip()
 
 
+def normalize_project(project):
+    """Помещение = номер + этаж («38.2» и «38.5» — разные). Старые ключи «38» дополняем этажом;
+    если есть и старый, и новый ключ одного помещения — остаётся новый."""
+    project = project if project and project.get("rooms") else {"rooms": {}}
+    rooms = {}
+    for k, p in project["rooms"].items():
+        fl = re.sub(r"\D", "", p.get("floor", ""))
+        key = k if "." in k or not fl else f"{k}.{fl}"
+        if "." in k or key not in rooms:
+            rooms[key] = p
+    project["rooms"] = rooms
+    return project
+
+
 class Knowledge:
     def __init__(self, records, project=None):
-        self.project = project if project and project.get("rooms") else {"rooms": {}}
-        # помещение = номер + этаж («38.2» и «38.5» — разные помещения); старые ключи «38» дополняем этажом
-        rooms = {}
-        for k, p in self.project["rooms"].items():
-            fl = re.sub(r"\D", "", p.get("floor", ""))
-            rooms[k if "." in k or not fl else f"{k}.{fl}"] = p
-        self.project["rooms"] = rooms
+        self.project = normalize_project(project)
         self.recs = []
         seen = set()
         for r in records:
@@ -586,7 +594,14 @@ class Knowledge:
         """Проект для акта: альбом помещения и лист по виду работ (если лист не найден — «лист ___»)."""
         p = self.project["rooms"].get(room)
         if not p:
-            return ""
+            # помещения нет в проекте — альбом из его прошлых актов (лист — от похожих работ, иначе «___»)
+            acts = [r for r in self.room_acts(room) if r.get("docs")]
+            if not acts:
+                return ""
+            best = max(acts, key=lambda r: (sim(work_part(work), work_part(r["works"])), act_num(r["act_no"])))
+            if work and sim(work_part(work), work_part(best["works"])) >= 0.5:
+                return best["docs"]
+            return re.sub(r"ТХ,?\s*лист\w*\s*[^»]*", "ТХ, лист ___", best["docs"])
         return self.project_docs(room, work) or \
             (f'ТОО «АКВАСЕРВИС»: «Альбом помещения {p["name"]} № {p["album_no"]}, {p["block"]}, '
              f'{p["floor"]}. ТХ, лист ___».')

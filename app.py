@@ -10,8 +10,8 @@ from pathlib import Path
 from tkinter import ttk, filedialog, messagebox, simpledialog, font as tkfont
 
 from generator import base_dir, generate
-from learn import (Knowledge, act_num, import_folder, key_no, location_part, split_materials,
-                   stage_of, work_part)
+from learn import (Knowledge, act_num, import_folder, key_no, location_part, normalize_project,
+                   split_materials, stage_of, work_part)
 
 APP_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
 # Данные — в скрытой папке .data рядом с программой: не видно, переносится вместе с .exe
@@ -1203,7 +1203,7 @@ class App(tk.Tk):
         if not (force or not cur or cur == self._docs_auto):
             return
         new = self.know.album_docs(self.cur_room, self.full_works())
-        if new:
+        if new or force:                       # сменили помещение — проект прежнего помещения не оставляем
             self.docs.delete("1.0", "end")
             self.docs.insert("1.0", new)
             self._docs_auto = new
@@ -1398,8 +1398,8 @@ class App(tk.Tk):
         if not proj.get("rooms"):
             messagebox.showerror("Проект", "Это не файл проекта.")
             return
-        cur = load_json(PROJ_FILE, {"rooms": {}})
-        cur.setdefault("rooms", {}).update(proj["rooms"])      # новые альбомы дополняют прежние
+        cur = normalize_project(load_json(PROJ_FILE, {"rooms": {}}))
+        cur["rooms"].update(normalize_project(proj)["rooms"])   # новые альбомы дополняют прежние
         save_json(PROJ_FILE, cur)
         self.know.project = cur
         messagebox.showinfo("Проект", f'Загружено помещений: {len(proj["rooms"])}\n'
