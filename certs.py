@@ -23,25 +23,61 @@ def norm_key(number):
 
 
 PREFIXES = {"ЕАЭС", "EAЭC", "ЕАЭC", "РОСС", "POCC", "KZ", "RU", "KG", "BY", "UZ", "№"}
+# номер после «№ / N / No»: «№ 7500669.01.01.02034», «№123-45/2024», «N KZ 75…»
+AFTER_NO_RE = re.compile(r"(?:№|\bN[oо]?\.?|#)\s*([A-ZА-ЯЁ0-9][A-ZА-ЯЁ0-9.\-/ ]*\d)", re.I)
+# любой «номерной» токен: 6+ цифр, с точками/дефисами/дробями (KZ.7500669.01.01.02034, 398550150091224001)
+TOKEN_RE = re.compile(r"[A-ZА-ЯЁ0-9][A-ZА-ЯЁ0-9.\-/]*\d[A-ZА-ЯЁ0-9.\-/]*", re.I)
+DATE_RE = re.compile(r"^\d{1,2}[.\-/]\d{1,2}[.\-/]\d{2,4}$")
+SIZE_RE = re.compile(r"\d+\s*[xх×*]\s*\d+", re.I)
+
+
+def _trim(chunk):
+    """Токены номера: префиксы и токены с цифрами; слова после номера («MasterTile», «WP 666») отсекаются."""
+    keep = []
+    for tok in chunk.split():
+        if tok.upper().translate(LOOKALIKE) in {p.translate(LOOKALIKE) for p in PREFIXES} or re.search(r"\d", tok):
+            if keep and re.search(r"[.\-/]\d", keep[-1]) and re.fullmatch(r"\d+", tok):
+                break                                  # «…02146 666» — второе число уже не номер
+            keep.append(tok)
+        else:
+            break
+    return " ".join(keep).strip(" .-/,;")
+
+
+def digits(number):
+    return re.sub(r"\D", "", number)
 
 
 def numbers_in(text):
-    """Номера сертификатов в тексте; слова после номера («MasterTile 665», «WP 666») отсекаются."""
+    """Номера сертификатов/писем в тексте: с приставкой (KZ, ЕАЭС, РОСС…), после «№», и длинные номерные токены.
+    Даты и размеры (1200х600) не считаются."""
+    text = SIZE_RE.sub(" ", text or "")
+    found = []
+    for m in NUM_RE.finditer(text):
+        found.append(_trim(m.group(0)))
+    for m in AFTER_NO_RE.finditer(text):
+        found.append(_trim(m.group(1)))
+    for m in TOKEN_RE.finditer(text):
+        tok = m.group(0).strip(".-/")
+        if len(digits(tok)) >= 6 and not DATE_RE.match(tok):
+            found.append(tok)
     out = []
-    for m in NUM_RE.finditer(text or ""):
-        keep = []
-        for tok in m.group(0).split():
-            if tok.upper().translate(LOOKALIKE) in {p.translate(LOOKALIKE) for p in PREFIXES} \
-                    or re.search(r"[.\-/\d]", tok):
-                if keep and re.search(r"[.\-/]\d", keep[-1]) and re.fullmatch(r"\d+", tok):
-                    break                              # «…02146 666» — второе число уже не номер
-                keep.append(tok)
-            else:
-                break
-        num = " ".join(keep).strip(" .-/")
-        if len(norm_key(num)) >= 8:
-            out.append(num)
+    for n in found:
+        if len(digits(n)) >= 5 and not DATE_RE.match(n) and n not in out:
+            out.append(n)
     return out
+
+
+def num_keys(numbers):
+    """Ключи сравнения: полный (буквы+цифры) и только цифры."""
+    keys = set()
+    for n in numbers:
+        k, d = norm_key(n), digits(n)
+        if len(k) >= 6:
+            keys.add(k)
+        if len(d) >= 6:
+            keys.add("#" + d)
+    return keys
 
 
 def pdf_text(path, pages=2):
@@ -55,28 +91,32 @@ def pdf_text(path, pages=2):
 
 
 def scan_folder(folder):
-    """Все файлы сертификатов в папке (с подпапками): номер, название, файл."""
+    """Все файлы сертификатов в папке (с подпапками): номера из имени файла И из содержимого PDF."""
     out = []
     for p in sorted(Path(folder).rglob("*")):
         if not p.is_file() or p.suffix.lower() not in EXTS or p.name.startswith("~$"):
             continue
-        nums = numbers_in(p.stem)
-        if not nums and p.suffix.lower() == ".pdf":
-            nums = numbers_in(pdf_text(p))
+        from_name = numbers_in(p.stem)
+        from_text = numbers_in(pdf_text(p)) if p.suffix.lower() == ".pdf" else []
+        nums = from_name + [n for n in from_text if n not in from_name]
         out.append({"file": str(p), "name": p.stem, "number": nums[0] if nums else "",
-                    "keys": sorted({norm_key(n) for n in nums}), "folder": p.parent.name})
+                    "numbers": nums[:12], "keys": sorted(num_keys(nums[:12])), "folder": p.parent.name})
     return out
 
 
 def match_material(item, certs):
-    """Сертификат для одной позиции материала: сначала по номеру, затем по названию."""
+    """Сертификат для одной позиции материала: сначала по номеру (полному или по цифрам), затем по названию."""
     text = item["name"] + " " + item.get("cert", "")
-    keys = {norm_key(n) for n in numbers_in(text)} | ({norm_key(item["cert"])} if item.get("cert") else set())
-    keys = {k for k in keys if len(k) >= 8}
+    keys = num_keys(numbers_in(text) + ([item["cert"]] if item.get("cert") else []))
     for c in certs:
-        for ck in c["keys"]:
-            for k in keys:
-                if ck == k or (len(k) >= 10 and (k in ck or ck in k)):
+        ck = set(c.get("keys", []))
+        if keys & ck:
+            return c, "номер"
+        for k in keys:                                 # номер записан частично: «…01.01.02034» в «KZ.7500669.01.01.02034»
+            for x in ck:
+                if k[0] == x[0] == "#" and (
+                        (min(len(k), len(x)) >= 9 and (k in x or x in k))             # часть номера внутри
+                        or (min(len(k), len(x)) >= 7 and (k.endswith(x[1:]) or x.endswith(k[1:])))):  # хвост номера
                     return c, "номер"
     # по названию: слова из имени файла (без «сертификат», «соответствия»…) должны быть в названии материала
     words = stems(item["name"])
