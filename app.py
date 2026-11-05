@@ -9,7 +9,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import ttk, filedialog, messagebox, simpledialog, font as tkfont
 
-from certs import match_materials, scan_folder
+from certs import load_registry, match_materials, scan_folder
 from generator import base_dir, generate
 from learn import (Knowledge, act_num, import_folder, key_no, location_part, normalize_project,
                    split_materials, stage_of, work_part)
@@ -653,6 +653,17 @@ class SignersDialog(tk.Toplevel):
         self.destroy()
 
 
+def cert_expired(c, on=None):
+    """Срок документа истёк (на дату on или сегодня)."""
+    from datetime import date
+    v = c.get("valid", "")
+    m = re.match(r"(\d{4})-(\d{2})-(\d{2})|(\d{2})\.(\d{2})\.(\d{4})", v or "")
+    if not m:
+        return False
+    d = date(int(m[1]), int(m[2]), int(m[3])) if m[1] else date(int(m[6]), int(m[5]), int(m[4]))
+    return d < (on or date.today())
+
+
 def open_file(path, action=None):
     if path and Path(path).exists() and hasattr(os, "startfile"):
         try:
@@ -668,8 +679,8 @@ def open_file(path, action=None):
 class CertsDialog(tk.Toplevel):
     """Реестр сертификатов: поиск, отметка «для акта», открыть, распечатать, собрать в папку акта."""
 
-    COLS = (("mark", "Для акта", 70), ("number", "Номер сертификата", 230), ("name", "Файл", 330),
-            ("material", "Материал акта", 300))
+    COLS = (("mark", "Для акта", 64), ("number", "Номер документа", 220), ("type", "Вид", 110),
+            ("name", "Материал / файл", 300), ("valid", "Действ. до", 82), ("material", "Материал акта", 250))
 
     def __init__(self, app, marks=None, title="Сертификаты", only_marked=False):
         super().__init__(app)
@@ -710,6 +721,7 @@ class CertsDialog(tk.Toplevel):
         self.tree.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
         self.tree.tag_configure("marked", background=DONE_BG)
+        self.tree.tag_configure("expired", foreground="#A4534A")
         self.tree.bind("<ButtonRelease-1>", self.click)
         self.tree.bind("<Double-1>", lambda e: self.open_sel())
         if not self.app.certs:
@@ -729,11 +741,16 @@ class CertsDialog(tk.Toplevel):
             marked = c["file"] in self.marks
             if self.only.get() and not marked:
                 continue
-            if q and q not in (c["number"] + " " + c["name"] + " " + c["folder"]).lower():
+            if q and q not in " ".join((c["number"], c["name"], c["folder"], c.get("material", ""),
+                                         c.get("type", ""))).lower():
                 continue
             self.shown.append(c)
-            self.tree.insert("", "end", iid=str(len(self.shown) - 1), tags=("marked",) if marked else (),
-                             values=("✓" if marked else "", c["number"], c["name"], used.get(c["file"], "")))
+            tags = ("marked",) if marked else ()
+            if cert_expired(c):
+                tags += ("expired",)
+            self.tree.insert("", "end", iid=str(len(self.shown) - 1), tags=tags,
+                             values=("✓" if marked else "", c["number"], c.get("type", ""),
+                                     c.get("material") or c["name"], c.get("valid", ""), used.get(c["file"], "")))
         n = sum(1 for c in self.app.certs if c["file"] in self.marks)
         if self.app.certs:
             self.count.configure(text=f"Сертификатов: {len(self.app.certs)}  ·  для акта отмечено: {n}")
@@ -1517,8 +1534,11 @@ class App(tk.Tk):
         m.add_separator()
         m.add_command(label=f"Папка сертификатов…  ({cdir})" if cdir else "Папка сертификатов…",
                       command=self.choose_certs)
-        m.add_command(label="Обновить сертификаты из папки", command=lambda: self.scan_certs(report=True),
-                      state="normal" if cdir else "disabled")
+        creg = self.settings.get("cert_registry")
+        m.add_command(label=f"Реестр сертификатов (Excel)…  ({Path(creg).name})" if creg
+                      else "Реестр сертификатов (Excel)…", command=self.choose_cert_registry)
+        m.add_command(label="Обновить сертификаты", command=lambda: self.scan_certs(report=True),
+                      state="normal" if (cdir or creg) else "disabled")
         m.add_separator()
         m.add_command(label="Импорт актов из другой папки…", command=self.import_acts)
         m.add_command(label="Импорт проекта (файл .json)…", command=self.import_project)
@@ -1542,13 +1562,32 @@ class App(tk.Tk):
             save_json(SETTINGS_FILE, self.settings)
             self.scan_certs(report=True)
 
+    def choose_cert_registry(self):
+        p = filedialog.askopenfilename(title="Реестр сертификатов (Excel)", filetypes=[("Excel", "*.xlsx")])
+        if p:
+            self.settings["cert_registry"] = p
+            save_json(SETTINGS_FILE, self.settings)
+            self.scan_certs(report=True)
+
     def scan_certs(self, report=False):
-        folder = self.settings.get("cert_dir")
-        if not folder or not Path(folder).exists():
+        """Реестр Excel (номер, материал, вид, срок, ссылка на файл) + все файлы папки сертификатов."""
+        folder, reg = self.settings.get("cert_dir"), self.settings.get("cert_registry")
+        folder = folder if folder and Path(folder).exists() else None
+        reg = reg if reg and Path(reg).exists() else None
+        if not folder and not reg:
             return
 
         def work():
-            res = scan_folder(folder)
+            res = []
+            try:
+                res = load_registry(reg) if reg else []
+            except Exception:
+                pass
+            have = {str(Path(c["file"])).lower() for c in res}
+            if folder:
+                for c in scan_folder(folder):
+                    if str(Path(c["file"])).lower() not in have:   # в реестре нет — берём из папки
+                        res.append(c)
             self.after(0, lambda: done(res))
 
         def done(res):
@@ -1557,7 +1596,9 @@ class App(tk.Tk):
             self.update_cert_status()
             if report:
                 n = sum(1 for c in res if c["number"])
-                messagebox.showinfo("Сертификаты", f"Файлов в папке: {len(res)}\nС распознанным номером: {n}")
+                lost = sum(1 for c in res if not Path(c["file"]).exists())
+                messagebox.showinfo("Сертификаты", f"Документов: {len(res)}\nС номером: {n}" +
+                                    (f"\nФайл не найден по ссылке: {lost}" if lost else ""))
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -1760,6 +1801,12 @@ class App(tk.Tk):
             return False
         errors, warns = self.know.check_act(self.cur_room, d["works"], d["start"], d["end"],
                                             d["act_no"], d["docs"])
+        from learn import to_date
+        on = to_date(d["end"]) or to_date(d["start"])
+        for c in self.certs:
+            if c["file"] in self.act_certs and cert_expired(c, on):
+                warns.append(f'Срок документа истёк: {c.get("type") or "сертификат"} № {c["number"]} '
+                             f'(действителен до {c["valid"]}).')
         if errors:
             messagebox.showerror("Проверка акта", "Исправьте, чтобы сформировать акт:\n\n" +
                                  "\n".join("✕  " + e for e in errors) +
