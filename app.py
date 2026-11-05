@@ -9,6 +9,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import ttk, filedialog, messagebox, simpledialog, font as tkfont
 
+from certs import match_materials, scan_folder
 from generator import base_dir, generate
 from learn import (Knowledge, act_num, import_folder, key_no, location_part, normalize_project,
                    split_materials, stage_of, work_part)
@@ -24,11 +25,12 @@ MAT_FILE = DATA_DIR / "materials.json"
 SIGN_FILE = DATA_DIR / "signers.json"
 LAST_FILE = DATA_DIR / "last_project.json"
 SETTINGS_FILE = DATA_DIR / "settings.json"       # папка базы актов и прочие настройки
-PROJ_FILE = DATA_DIR / "project.json"            # проект: помещения, листы альбомов, этапы
+PROJ_FILE = DATA_DIR / "project.json"
+CERT_FILE = DATA_DIR / "certs.json"              # реестр сертификатов из подключённой папки            # проект: помещения, листы альбомов, этапы
 KNOW_FILE = DATA_DIR / "knowledge.json"          # акты, которые программа изучила у пользователя
 
 # файлы прежних версий, лежавшие рядом с программой, переносятся в .data
-for _f in (MAT_FILE, SIGN_FILE, LAST_FILE, KNOW_FILE, PROJ_FILE):
+for _f in (MAT_FILE, SIGN_FILE, LAST_FILE, KNOW_FILE, PROJ_FILE, CERT_FILE):
     _old = APP_DIR / _f.name
     if _old.exists() and not _f.exists():
         try:
@@ -55,7 +57,7 @@ def spaced(text):
     return "\u200a".join(text.upper())
 
 DEFAULT = {
-    "room": "", "act_no": "", "works": "", "loc": "", "docs": "", "materials_text": "",
+    "room": "", "act_no": "", "works": "", "loc": "", "docs": "", "materials_text": "", "certs": [],
     "start": "", "end": "", "next_works": "",
     "reps": [],
 }
@@ -651,6 +653,147 @@ class SignersDialog(tk.Toplevel):
         self.destroy()
 
 
+def open_file(path, action=None):
+    if path and Path(path).exists() and hasattr(os, "startfile"):
+        try:
+            os.startfile(path, action) if action else os.startfile(path)
+            return True
+        except OSError:
+            if action:                                # у файла нет команды «печать» — просто открыть
+                os.startfile(path)
+                return True
+    return False
+
+
+class CertsDialog(tk.Toplevel):
+    """Реестр сертификатов: поиск, отметка «для акта», открыть, распечатать, собрать в папку акта."""
+
+    COLS = (("mark", "Для акта", 70), ("number", "Номер сертификата", 230), ("name", "Файл", 330),
+            ("material", "Материал акта", 300))
+
+    def __init__(self, app, marks=None, title="Сертификаты", only_marked=False):
+        super().__init__(app)
+        self.app = app
+        self.own_marks = marks                        # None — отметки текущего акта
+        self.title(title)
+        self.configure(bg=BG)
+        self.geometry("1040x580")
+        self.transient(app)
+        top = ttk.Frame(self, padding=(18, 12, 18, 4))
+        top.pack(fill="x")
+        tk.Label(top, text=title, bg=BG, fg=TEXT, font=(SERIF, 15, "bold")).pack(side="left")
+        self.q = tk.StringVar()
+        self.q.trace_add("write", lambda *_: self.refresh())
+        ttk.Entry(top, textvariable=self.q, width=30).pack(side="right")
+        ttk.Label(top, text="Поиск: номер или название", style="Muted.TLabel").pack(side="right", padx=8)
+        info = ttk.Frame(self, padding=(18, 0))
+        info.pack(fill="x")
+        self.only = tk.BooleanVar(value=only_marked)
+        ttk.Checkbutton(info, text="Только «для акта»", variable=self.only, command=self.refresh,
+                        style="TCheckbutton").pack(side="left")
+        self.count = ttk.Label(info, text="", style="Muted.TLabel")
+        self.count.pack(side="left", padx=12)
+        bar = ttk.Frame(self, padding=(18, 6, 18, 14))
+        bar.pack(side="bottom", fill="x")
+        for t, c in (("Открыть", self.open_sel), ("Открыть отмеченные", self.open_marked),
+                     ("Печать отмеченных", self.print_marked), ("Собрать в папку акта", self.collect_to_folder)):
+            ttk.Button(bar, text=t, command=c).pack(side="left", padx=(0, 6))
+        ttk.Button(bar, text="Готово", style="Accent.TButton", command=self.destroy).pack(side="right")
+        mid = ttk.Frame(self, padding=(18, 6))
+        mid.pack(fill="both", expand=True)
+        self.tree = ttk.Treeview(mid, columns=[c for c, *_ in self.COLS], show="headings", selectmode="extended")
+        for c, t, w in self.COLS:
+            self.tree.heading(c, text=t, anchor="w")
+            self.tree.column(c, width=w, anchor="center" if c == "mark" else "w", stretch=(c in ("name", "material")))
+        sb = ttk.Scrollbar(mid, command=self.tree.yview)
+        self.tree.configure(yscrollcommand=sb.set)
+        self.tree.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        self.tree.tag_configure("marked", background=DONE_BG)
+        self.tree.bind("<ButtonRelease-1>", self.click)
+        self.tree.bind("<Double-1>", lambda e: self.open_sel())
+        if not self.app.certs:
+            self.count.configure(text="Папка сертификатов не подключена: «База ▾ → Папка сертификатов…»")
+        self.refresh()
+
+    @property
+    def marks(self):
+        return self.own_marks if self.own_marks is not None else self.app.act_certs
+
+    def refresh(self):
+        q = self.q.get().strip().lower()
+        used = {c["file"]: it["name"] for it, c, _ in self.app.cert_matches() if c}
+        self.tree.delete(*self.tree.get_children())
+        self.shown = []
+        for c in self.app.certs:
+            marked = c["file"] in self.marks
+            if self.only.get() and not marked:
+                continue
+            if q and q not in (c["number"] + " " + c["name"] + " " + c["folder"]).lower():
+                continue
+            self.shown.append(c)
+            self.tree.insert("", "end", iid=str(len(self.shown) - 1), tags=("marked",) if marked else (),
+                             values=("✓" if marked else "", c["number"], c["name"], used.get(c["file"], "")))
+        n = sum(1 for c in self.app.certs if c["file"] in self.marks)
+        if self.app.certs:
+            self.count.configure(text=f"Сертификатов: {len(self.app.certs)}  ·  для акта отмечено: {n}")
+
+    def sel(self):
+        return [self.shown[int(i)] for i in self.tree.selection()]
+
+    def click(self, e):
+        if self.tree.identify_column(e.x) != "#1" or self.tree.identify_region(e.x, e.y) != "cell":
+            return
+        for c in self.sel():
+            if c["file"] in self.marks:
+                self.marks.discard(c["file"])
+                if self.own_marks is None:
+                    self.app.act_certs_removed.add(c["file"])
+            else:
+                self.marks.add(c["file"])
+                self.app.act_certs_removed.discard(c["file"])
+        self.app.update_cert_status()
+        self.refresh()
+
+    def marked(self):
+        return [c for c in self.app.certs if c["file"] in self.marks]
+
+    def open_sel(self):
+        for c in self.sel():
+            open_file(c["file"])
+
+    def open_marked(self):
+        for c in self.marked():
+            open_file(c["file"])
+
+    def print_marked(self):
+        files = self.marked()
+        if not files:
+            messagebox.showinfo("Сертификаты", "Нет отмеченных «для акта».", parent=self)
+            return
+        if messagebox.askyesno("Печать", f"Отправить на принтер по умолчанию: {len(files)} шт.?", parent=self):
+            for c in files:
+                open_file(c["file"], "print")
+
+    def collect_to_folder(self):
+        """Копии отмеченных сертификатов — в папку помещения, подпапка «Сертификаты к акту №…»."""
+        files = self.marked()
+        base = self.app.settings.get("base_dir")
+        if not files or not base or not self.app.cur_room:
+            messagebox.showinfo("Сертификаты", "Нужно: выбранное помещение, папка базы актов и отмеченные "
+                                              "сертификаты.", parent=self)
+            return
+        folder = self.app.know.room_folder(self.app.cur_room, base) / \
+            f"Сертификаты к акту №{self.app.act_no.get().strip() or 'б-н'}"
+        folder.mkdir(parents=True, exist_ok=True)
+        for c in files:
+            try:
+                shutil.copy2(c["file"], folder / Path(c["file"]).name)
+            except OSError:
+                pass
+        self.app.open_path(str(folder))
+
+
 class RegistryDialog(tk.Toplevel):
     """Реестр актов: все сформированные и импортированные акты, поиск, экспорт в Excel."""
 
@@ -676,6 +819,7 @@ class RegistryDialog(tk.Toplevel):
         bar = ttk.Frame(self, padding=(18, 6, 18, 14))
         bar.pack(side="bottom", fill="x")
         for t, c in (("Открыть в форме", self.to_form), ("Открыть файл", self.open_file),
+                     ("Сертификаты акта", self.act_certs),
                      ("Удалить из реестра", self.delete)):
             ttk.Button(bar, text=t, command=c).pack(side="left", padx=(0, 6))
         ttk.Button(bar, text="Экспорт в Excel", style="Accent.TButton", command=self.export).pack(side="right")
@@ -730,6 +874,16 @@ class RegistryDialog(tk.Toplevel):
         if r:
             self.app.apply_record(r)
             self.destroy()
+
+    def act_certs(self):
+        r = self.cur()
+        if r:
+            marks = set(r.get("certs", []))
+            if not marks:
+                messagebox.showinfo("Реестр", "К этому акту сертификаты не отмечались.", parent=self)
+                return
+            CertsDialog(self.app, marks=marks, title=f'Сертификаты к акту № {r.get("act_no", "")}',
+                        only_marked=True)
 
     def open_file(self):
         r = self.cur()
@@ -1009,9 +1163,14 @@ class App(tk.Tk):
         self.rows = []          # [{"on": BooleanVar, "var": StringVar, "rep": dict, "cb": Combobox}]
         self.reps_data = [dict(r) for r in data["reps"]]
         self.settings = load_json(SETTINGS_FILE, {})
+        self.certs = load_json(CERT_FILE, [])
+        self.act_certs_removed = set()               # снятые вручную — повторно не отмечать
+        self.act_certs = set(data.get("certs", []))
         self.build(data)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.after(300, self.scan_base)
+        self.after(600, self.scan_certs)
+        self.after(700, self.update_cert_status)
 
     # ---------- построение окна
     def build(self, data):
@@ -1050,6 +1209,7 @@ class App(tk.Tk):
         ttk.Button(foot, text="Сформировать акт (Word)", style="Ok.TButton",
                    command=self.make).pack(side="right")
         ttk.Button(foot, text="Реестр актов", command=lambda: RegistryDialog(self)).pack(side="left")
+        ttk.Button(foot, text="Сертификаты", command=lambda: CertsDialog(self)).pack(side="left", padx=(6, 0))
         ttk.Button(foot, text="Сводная", command=lambda: SummaryDialog(self)).pack(side="left", padx=6)
         self.saved_lbl = tk.Label(foot, text="", bg=BG, fg=SAVED, font=("Segoe UI", 10, "bold"), cursor="hand2")
         self.saved_lbl.pack(side="right", padx=12)
@@ -1136,8 +1296,14 @@ class App(tk.Tk):
         c = section("При выполнении работ применены")
         self.materials = text_field(c, 2, data["materials_text"])
         self.materials.pack(fill="x")
-        ttk.Button(c, text="＋ Выбрать из базы материалов", style="Link.TButton",
-                   command=self.open_materials).pack(anchor="w")
+        mrow = tk.Frame(c, bg=CARD)
+        mrow.pack(fill="x")
+        ttk.Button(mrow, text="＋ Выбрать из базы материалов", style="Link.TButton",
+                   command=self.open_materials).pack(side="left")
+        self.cert_lbl = tk.Label(mrow, text="", bg=CARD, fg=ACCENT, font=("Segoe UI", 8), cursor="hand2")
+        self.cert_lbl.pack(side="right")
+        self.cert_lbl.bind("<Button-1>", lambda e: CertsDialog(self))
+        self.materials.bind("<KeyRelease>", lambda e: self.after(400, self.update_cert_status), add="+")
 
         # 5. даты
         c = section("Даты")
@@ -1347,6 +1513,12 @@ class App(tk.Tk):
                       state="normal" if base else "disabled")
         m.add_command(label="Обновить базу из папки", command=lambda: self.scan_base(report=True),
                       state="normal" if base else "disabled")
+        cdir = self.settings.get("cert_dir")
+        m.add_separator()
+        m.add_command(label=f"Папка сертификатов…  ({cdir})" if cdir else "Папка сертификатов…",
+                      command=self.choose_certs)
+        m.add_command(label="Обновить сертификаты из папки", command=lambda: self.scan_certs(report=True),
+                      state="normal" if cdir else "disabled")
         m.add_separator()
         m.add_command(label="Импорт актов из другой папки…", command=self.import_acts)
         m.add_command(label="Импорт проекта (файл .json)…", command=self.import_project)
@@ -1361,6 +1533,53 @@ class App(tk.Tk):
         save_json(SETTINGS_FILE, self.settings)
         self.scan_base(report=True)
         return True
+
+    # ---------- сертификаты
+    def choose_certs(self):
+        p = filedialog.askdirectory(title="Папка с сертификатами (с подпапками)")
+        if p:
+            self.settings["cert_dir"] = p
+            save_json(SETTINGS_FILE, self.settings)
+            self.scan_certs(report=True)
+
+    def scan_certs(self, report=False):
+        folder = self.settings.get("cert_dir")
+        if not folder or not Path(folder).exists():
+            return
+
+        def work():
+            res = scan_folder(folder)
+            self.after(0, lambda: done(res))
+
+        def done(res):
+            self.certs = res
+            save_json(CERT_FILE, res)
+            self.update_cert_status()
+            if report:
+                n = sum(1 for c in res if c["number"])
+                messagebox.showinfo("Сертификаты", f"Файлов в папке: {len(res)}\nС распознанным номером: {n}")
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def cert_matches(self):
+        return match_materials(self.materials.get("1.0", "end"), self.certs) if self.certs else []
+
+    def update_cert_status(self):
+        """Под материалами: сколько сертификатов нашлось; найденные сами отмечаются «для акта»."""
+        if not hasattr(self, "cert_lbl"):
+            return
+        if not self.certs:
+            self.cert_lbl.configure(text="сертификаты: папка не подключена (База ▾)"
+                                    if not self.settings.get("cert_dir") else "сертификаты: в папке нет файлов")
+            return
+        m = self.cert_matches()
+        found = [c for _, c, _ in m if c]
+        for c in found:
+            if c["file"] not in self.act_certs_removed:
+                self.act_certs.add(c["file"])
+        self.cert_lbl.configure(text=f"сертификаты: найдено {len(found)} из {len(m)}  ·  для акта: "
+                                     f"{len(self.act_certs)}  ·  открыть ›" if m else
+                                     f"сертификаты: для акта {len(self.act_certs)}  ·  открыть ›")
 
     @staticmethod
     def open_path(p):
@@ -1429,7 +1648,7 @@ class App(tk.Tk):
     def learn(self, d, path):
         """Сформированный акт — в реестр и в базу подсказок."""
         rec = {k: d[k] for k in ("act_no", "works", "docs", "next_works", "start", "end")}
-        rec.update(materials=d["materials_text"], file=str(path), source="сформирован",
+        rec.update(materials=d["materials_text"], file=str(path), source="сформирован", certs=d.get("certs", []),
                    signers=[r["name"] for r in d["reps"] if r.get("on", True) and r.get("name")])
         self.know.upsert(rec)
         self.save_know()
@@ -1437,7 +1656,7 @@ class App(tk.Tk):
     def apply_draft(self, d):
         """Черновик из «Следующего акта» — в поля формы; подписанты остаются как есть."""
         cur = self.collect()
-        self.apply({**cur, **{k: v for k, v in d.items() if k in DEFAULT},
+        self.apply({**cur, **{k: v for k, v in d.items() if k in DEFAULT}, "certs": [],
                     "loc": location_part(d.get("works", "")) or cur["loc"]})
         self.flash_saved(f"✦  Черновик по акту № {d.get('template', '?')}")
 
@@ -1447,7 +1666,8 @@ class App(tk.Tk):
         self.apply({**cur, "act_no": r.get("act_no", ""), "works": r.get("works", ""),
                     "docs": r.get("docs", ""), "materials_text": r.get("materials", ""),
                     "next_works": r.get("next_works", ""), "start": r.get("start", ""),
-                    "end": r.get("end", ""), "loc": location_part(r.get("works", ""))})
+                    "end": r.get("end", ""), "loc": location_part(r.get("works", "")),
+                    "certs": r.get("certs", [])})
 
     def open_materials(self):
         MaterialsDialog(self)
@@ -1458,6 +1678,7 @@ class App(tk.Tk):
         g = lambda t: cap(t.get("1.0", "end"))
         return {"room": self.cur_room, "act_no": self.act_no.get().strip(), "works": g(self.works),
                 "loc": self.loc_var.get().strip(), "docs": g(self.docs),
+                "certs": sorted(self.act_certs),
                 "materials_text": g(self.materials),
                 "start": self.start.get().strip(), "end": self.end.get().strip(),
                 "next_works": g(self.next_works),
@@ -1482,6 +1703,10 @@ class App(tk.Tk):
             self.room_refresh()
         if hasattr(self, "loc_var"):
             self.apply_work_fields(d)
+        if hasattr(self, "cert_lbl"):
+            self.act_certs = set(d.get("certs", []))
+            self.act_certs_removed = set()
+            self.update_cert_status()
 
     def open_project(self):
         p = filedialog.askopenfilename(filetypes=[("Проект акта", "*.json")])

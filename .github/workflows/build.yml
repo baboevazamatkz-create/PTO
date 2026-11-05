@@ -9,7 +9,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: {python-version: "3.12"}
-      - run: pip install python-docx openpyxl pyinstaller
+      - run: pip install python-docx openpyxl pypdf pyinstaller
       - run: pyinstaller --noconsole --onefile --name akt --icon akt.ico --add-data "template.docx;." --add-data "akt.ico;." app.py
       - uses: actions/upload-artifact@v4
         with: {name: akt-windows, path: dist}
