@@ -9,7 +9,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import ttk, filedialog, messagebox, simpledialog, font as tkfont
 
-from certs import load_registry, match_materials, scan_folder
+from certs import load_registry, scan_folder, merge_certificates
 from generator import base_dir, generate
 from learn import (Knowledge, act_num, import_folder, key_no, location_part, normalize_project,
                    split_materials, stage_of, work_part)
@@ -208,10 +208,10 @@ def setup_style(root):
         s.configure(name, background=TEXT, foreground=INK_ON, padding=(18, 8), borderwidth=0,
                     font=(fam, 9, "bold"), focuscolor=TEXT, lightcolor=TEXT, darkcolor=TEXT)
         s.map(name, background=[("active", ACCENT)], foreground=[("active", "#FFFFFF")])
-    s.configure("Link.TButton", background=CARD, foreground=ACCENT, padding=(0, 2), borderwidth=0,
+    s.configure("Link.TButton", background=CARD, foreground=ACCENT, padding=(8, 5), borderwidth=1,
                 focuscolor=CARD, lightcolor=CARD, darkcolor=CARD)
     s.map("Link.TButton", background=[("active", CARD)], foreground=[("active", ACCENT_D)])
-    s.configure("Icon.TButton", background=CARD, foreground=MUTED, padding=(5, 3), borderwidth=0,
+    s.configure("Icon.TButton", background=CARD, foreground=TEXT, padding=(6, 5), borderwidth=1, width=3, anchor="center",
                 focuscolor=CARD, lightcolor=CARD, darkcolor=CARD)
     s.map("Icon.TButton", background=[("active", HOVER)], foreground=[("active", ACCENT_D)])
     s.configure("Treeview", background=FIELD, fieldbackground=FIELD, rowheight=26,
@@ -463,6 +463,7 @@ class MaterialsDialog(tk.Toplevel):
                             ("cert", "Сертификат №", 200, False)):
             self.tree.heading(c, text=t, anchor="w")
             self.tree.column(c, width=w, stretch=st, anchor="w")
+        sortable_table(self.tree, self.COLS)
         sb = ttk.Scrollbar(mid, command=self.tree.yview)
         self.tree.configure(yscrollcommand=sb.set)
         self.tree.pack(side="left", fill="both", expand=True)
@@ -486,6 +487,8 @@ class MaterialsDialog(tk.Toplevel):
             self.tree.insert("", "end", iid=str(i), values=(
                 "✔" if m["name"] in self.app.chosen else "", m["name"], m["cert"]))
         save_json(MAT_FILE, self.app.mats)
+
+        self.tree.apply_sort()
 
     def cur(self):
         s = self.tree.selection()
@@ -594,7 +597,7 @@ class SignersDialog(tk.Toplevel):
                   style="Muted.TLabel").pack(anchor="w", padx=16, pady=(0, 6))
         bar = ttk.Frame(self, padding=(16, 6, 16, 12))
         bar.pack(side="bottom", fill="x")
-        ttk.Button(bar, text="＋ Добавить подписанта", command=self.add).pack(side="left")
+        ttk.Button(bar, text="+ Добавить подписанта", command=self.add).pack(side="left")
         ttk.Button(bar, text="Сохранить", style="Accent.TButton", command=self.close).pack(side="right")
         head = tk.Frame(self, bg=BG)
         head.pack(fill="x", padx=(16, 32))
@@ -624,7 +627,7 @@ class SignersDialog(tk.Toplevel):
                   else ttk.Entry(f, textvariable=v))
             w_.grid(row=0, column=c, sticky="ew", padx=3)
             row[k] = v
-        ttk.Button(f, text="✕", width=2, style="Icon.TButton",
+        ttk.Button(f, text="×", width=2, style="Icon.TButton",
                    command=lambda: self.remove(row)).grid(row=0, column=len(self.COLS))
         self.rows.append(row)
         return row
@@ -676,11 +679,46 @@ def open_file(path, action=None):
     return False
 
 
-class CertsDialog(tk.Toplevel):
-    """Реестр сертификатов: поиск, отметка «для акта», открыть, распечатать, собрать в папку акта."""
+def table_sort_key(value):
+    from learn import to_date
+    text = str(value or "").strip()
+    date = to_date(text) if re.fullmatch(r"\d{1,2}\.\d{1,2}\.\d{4}", text) else None
+    if date:
+        return (0, date.toordinal())
+    return (1, tuple((0, int(x)) if x.isdigit() else (1, x.casefold())
+                     for x in re.split(r"(\d+)", text)))
 
-    COLS = (("mark", "Для акта", 64), ("number", "Номер документа", 220), ("type", "Вид", 110),
-            ("name", "Материал / файл", 300), ("valid", "Действ. до", 82), ("material", "Материал акта", 250))
+
+def sortable_table(tree, columns):
+    """Сортировка строк без изменения идентификаторов и выбранных записей."""
+    tree.sort_state = None
+
+    def apply():
+        if tree.sort_state is None:
+            return
+        column, reverse = tree.sort_state
+        rows = sorted(tree.get_children(), key=lambda iid: table_sort_key(tree.set(iid, column)),
+                      reverse=reverse)
+        for index, iid in enumerate(rows):
+            tree.move(iid, "", index)
+        for c, title, _ in columns:
+            tree.heading(c, text=title + ((" ▼" if reverse else " ▲") if c == column else ""))
+
+    def choose(column):
+        old = tree.sort_state
+        tree.sort_state = (column, not old[1] if old and old[0] == column else False)
+        apply()
+
+    tree.apply_sort = apply
+    for column, _, _ in columns:
+        tree.heading(column, command=lambda c=column: choose(c))
+
+
+class CertsDialog(tk.Toplevel):
+    """Реестр сертификатов: поиск, сортировка и действия с выбранными строками."""
+
+    COLS = (("number", "Номер документа", 220), ("type", "Вид", 110),
+            ("name", "Материал / файл", 300), ("valid", "Действ. до", 82))
 
     def __init__(self, app, marks=None, title="Сертификаты", only_marked=False):
         super().__init__(app)
@@ -700,14 +738,12 @@ class CertsDialog(tk.Toplevel):
         info = ttk.Frame(self, padding=(18, 0))
         info.pack(fill="x")
         self.only = tk.BooleanVar(value=only_marked)
-        ttk.Checkbutton(info, text="Только «для акта»", variable=self.only, command=self.refresh,
-                        style="TCheckbutton").pack(side="left")
         self.count = ttk.Label(info, text="", style="Muted.TLabel")
         self.count.pack(side="left", padx=12)
         bar = ttk.Frame(self, padding=(18, 6, 18, 14))
         bar.pack(side="bottom", fill="x")
-        for t, c in (("Открыть", self.open_sel), ("Открыть отмеченные", self.open_marked),
-                     ("Печать отмеченных", self.print_marked), ("Собрать в папку акта", self.collect_to_folder)):
+        for t, c in (("Открыть", self.open_sel), ("Открыть выбранные", self.open_marked),
+                     ("Печать выбранных", self.print_marked), ("Собрать выбранные в папку", self.collect_to_folder)):
             ttk.Button(bar, text=t, command=c).pack(side="left", padx=(0, 6))
         ttk.Button(bar, text="Готово", style="Accent.TButton", command=self.destroy).pack(side="right")
         mid = ttk.Frame(self, padding=(18, 6))
@@ -716,13 +752,12 @@ class CertsDialog(tk.Toplevel):
         for c, t, w in self.COLS:
             self.tree.heading(c, text=t, anchor="w")
             self.tree.column(c, width=w, anchor="center" if c == "mark" else "w", stretch=(c in ("name", "material")))
+        sortable_table(self.tree, self.COLS)
         sb = ttk.Scrollbar(mid, command=self.tree.yview)
         self.tree.configure(yscrollcommand=sb.set)
         self.tree.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
-        self.tree.tag_configure("marked", background=DONE_BG)
         self.tree.tag_configure("expired", foreground="#A4534A")
-        self.tree.bind("<ButtonRelease-1>", self.click)
         self.tree.bind("<Double-1>", lambda e: self.open_sel())
         if not self.app.certs:
             self.count.configure(text="Папка сертификатов не подключена: «База ▾ → Папка сертификатов…»")
@@ -730,11 +765,10 @@ class CertsDialog(tk.Toplevel):
 
     @property
     def marks(self):
-        return self.own_marks if self.own_marks is not None else self.app.act_certs
+        return self.own_marks or set()
 
     def refresh(self):
         q = self.q.get().strip().lower()
-        used = {c["file"]: it["name"] for it, c, _ in self.app.cert_matches() if c}
         self.tree.delete(*self.tree.get_children())
         self.shown = []
         for c in self.app.certs:
@@ -745,35 +779,22 @@ class CertsDialog(tk.Toplevel):
                                          c.get("type", ""))).lower():
                 continue
             self.shown.append(c)
-            tags = ("marked",) if marked else ()
+            tags = ()
             if cert_expired(c):
                 tags += ("expired",)
             self.tree.insert("", "end", iid=str(len(self.shown) - 1), tags=tags,
-                             values=("✓" if marked else "", c["number"], c.get("type", ""),
-                                     c.get("material") or c["name"], c.get("valid", ""), used.get(c["file"], "")))
-        n = sum(1 for c in self.app.certs if c["file"] in self.marks)
+                             values=(c["number"], c.get("type", ""),
+                                     c.get("material") or c["name"], c.get("valid", "")))
         if self.app.certs:
-            self.count.configure(text=f"Сертификатов: {len(self.app.certs)}  ·  для акта отмечено: {n}")
+            self.count.configure(text=f"Сертификатов: {len(self.shown)}")
+
+        self.tree.apply_sort()
 
     def sel(self):
         return [self.shown[int(i)] for i in self.tree.selection()]
 
-    def click(self, e):
-        if self.tree.identify_column(e.x) != "#1" or self.tree.identify_region(e.x, e.y) != "cell":
-            return
-        for c in self.sel():
-            if c["file"] in self.marks:
-                self.marks.discard(c["file"])
-                if self.own_marks is None:
-                    self.app.act_certs_removed.add(c["file"])
-            else:
-                self.marks.add(c["file"])
-                self.app.act_certs_removed.discard(c["file"])
-        self.app.update_cert_status()
-        self.refresh()
-
     def marked(self):
-        return [c for c in self.app.certs if c["file"] in self.marks]
+        return self.sel()
 
     def open_sel(self):
         for c in self.sel():
@@ -786,7 +807,7 @@ class CertsDialog(tk.Toplevel):
     def print_marked(self):
         files = self.marked()
         if not files:
-            messagebox.showinfo("Сертификаты", "Нет отмеченных «для акта».", parent=self)
+            messagebox.showinfo("Сертификаты", "Выберите сертификаты в списке.", parent=self)
             return
         if messagebox.askyesno("Печать", f"Отправить на принтер по умолчанию: {len(files)} шт.?", parent=self):
             for c in files:
@@ -797,7 +818,7 @@ class CertsDialog(tk.Toplevel):
         files = self.marked()
         base = self.app.settings.get("base_dir")
         if not files or not base or not self.app.cur_room:
-            messagebox.showinfo("Сертификаты", "Нужно: выбранное помещение, папка базы актов и отмеченные "
+            messagebox.showinfo("Сертификаты", "Нужно: выбранное помещение, папка базы актов и выбранные "
                                               "сертификаты.", parent=self)
             return
         folder = self.app.know.room_folder(self.app.cur_room, base) / \
@@ -814,7 +835,7 @@ class CertsDialog(tk.Toplevel):
 class RegistryDialog(tk.Toplevel):
     """Реестр актов: все сформированные и импортированные акты, поиск, экспорт в Excel."""
 
-    COLS = (("act_no", "№", 50), ("start", "Начало", 80), ("end", "Окончание", 80),
+    COLS = (("act_no", "№", 50), ("act_type", "Вид акта", 70), ("start", "Начало", 80), ("end", "Окончание", 80),
             ("room", "Пом.", 60), ("works", "Предъявленные работы", 420), ("source", "Откуда", 90))
 
     def __init__(self, app):
@@ -847,6 +868,7 @@ class RegistryDialog(tk.Toplevel):
         for c, t, w in self.COLS:
             self.tree.heading(c, text=t, anchor="w")
             self.tree.column(c, width=w, anchor="w", stretch=(c == "works"))
+        sortable_table(self.tree, self.COLS)
         sb = ttk.Scrollbar(mid, command=self.tree.yview)
         self.tree.configure(yscrollcommand=sb.set)
         self.tree.pack(side="left", fill="both", expand=True)
@@ -878,9 +900,11 @@ class RegistryDialog(tk.Toplevel):
         self.shown = self.rows()
         for i, r in enumerate(self.shown):
             self.tree.insert("", "end", iid=str(i), values=(
-                r.get("act_no", ""), r.get("start", ""), r.get("end", ""), ", ".join(self.app.know.keys(r)),
+                r.get("act_no", ""), self.app.know.act_type(r), r.get("start", ""), r.get("end", ""), ", ".join(self.app.know.keys(r)),
                 r["works"], r.get("source", "импорт")))
         self.count.configure(text=f"Актов: {len(self.shown)} из {len(self.app.know.recs)}")
+
+        self.tree.apply_sort()
 
     def cur(self):
         s = self.tree.selection()
@@ -955,7 +979,7 @@ def export_registry(recs, path, know):
         cell.alignment = Alignment(vertical="center", wrap_text=True)
         ws.column_dimensions[cell.column_letter].width = w
     for r in recs:
-        ws.append([r.get("act_no", ""), r.get("start", ""), r.get("end", ""), ", ".join(know.keys(r)),
+        ws.append([r.get("act_no", ""), self.app.know.act_type(r), r.get("start", ""), r.get("end", ""), ", ".join(know.keys(r)),
                    r.get("works", ""), r.get("docs", ""), r.get("materials", ""), r.get("next_works", ""),
                    ", ".join(r.get("signers", [])), r.get("file", "")])
     for row in ws.iter_rows(min_row=2):
@@ -1181,8 +1205,6 @@ class App(tk.Tk):
         self.reps_data = [dict(r) for r in data["reps"]]
         self.settings = load_json(SETTINGS_FILE, {})
         self.certs = load_json(CERT_FILE, [])
-        self.act_certs_removed = set()               # снятые вручную — повторно не отмечать
-        self.act_certs = set(data.get("certs", []))
         self.build(data)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.after(300, self.scan_base)
@@ -1223,8 +1245,10 @@ class App(tk.Tk):
         foot.pack(side="bottom", fill="x")
         tk.Frame(self, height=1, bg=LINE).pack(side="bottom", fill="x")
         foot.configure(style="TFrame")
-        ttk.Button(foot, text="Сформировать акт (Word)", style="Ok.TButton",
+        ttk.Button(foot, text="Сформировать АОСР", style="Ok.TButton",
                    command=self.make).pack(side="right")
+        ttk.Button(foot, text="Сформировать АППР", style="Ok.TButton",
+                   command=lambda: self.make("АППР")).pack(side="right", padx=6)
         ttk.Button(foot, text="Реестр актов", command=lambda: RegistryDialog(self)).pack(side="left")
         ttk.Button(foot, text="Сертификаты", command=lambda: CertsDialog(self)).pack(side="left", padx=(6, 0))
         ttk.Button(foot, text="Сводная", command=lambda: SummaryDialog(self)).pack(side="left", padx=6)
@@ -1260,7 +1284,7 @@ class App(tk.Tk):
                      font=("Segoe UI", 7, "bold")).pack(side="left")
             return inner
 
-        # 0. помещение — основа: какие акты сделаны, какие остались
+        # 0. выбор помещения
         c = section("Помещение")
         top = tk.Frame(c, bg=CARD)
         top.pack(fill="x")
@@ -1272,8 +1296,6 @@ class App(tk.Tk):
                    command=self.room_next).pack(side="right")
         self.room_info = tk.Label(c, text="", bg=CARD, fg=MUTED, font=("Segoe UI", 9), anchor="w")
         self.room_info.pack(fill="x", pady=(4, 0))
-        self.chips = tk.Frame(c, bg=CARD)
-        self.chips.pack(fill="x", pady=(6, 0))
         self.base_info = tk.Label(c, text="", bg=CARD, fg=MUTED, font=("Segoe UI", 8), anchor="w")
         self.base_info.pack(fill="x")
         self.cur_room = data.get("room", "")
@@ -1281,13 +1303,18 @@ class App(tk.Tk):
         # 1. номер акта
         c = section("Акт №")
         self.act_no = tk.StringVar(value=data["act_no"])
-        ttk.Entry(c, textvariable=self.act_no, width=14).pack(anchor="w")
+        number_row = ttk.Frame(c, style="Card.TFrame")
+        number_row.pack(anchor="w")
+        ttk.Entry(number_row, textvariable=self.act_no, width=14).pack(side="left")
+        for text, step in (("↑", 1), ("↓", -1)):
+            ttk.Button(number_row, text=text, style="Icon.TButton", width=3,
+                       command=lambda n=step: self.step_act_number(n)).pack(side="left", padx=(4, 0))
 
         # 2. представители
         c = section("Мы, нижеподписавшиеся — представители")
         self.reps_frame = ttk.Frame(c, style="Card.TFrame")
         self.reps_frame.pack(fill="x")
-        ttk.Button(c, text="＋ Добавить представителя", style="Link.TButton",
+        ttk.Button(c, text="+ Добавить представителя", style="Link.TButton",
                    command=self.rep_add).pack(anchor="w")
         self.rep_draw()
 
@@ -1315,7 +1342,7 @@ class App(tk.Tk):
         self.materials.pack(fill="x")
         mrow = tk.Frame(c, bg=CARD)
         mrow.pack(fill="x")
-        ttk.Button(mrow, text="＋ Выбрать из базы материалов", style="Link.TButton",
+        ttk.Button(mrow, text="+ Выбрать из базы материалов", style="Link.TButton",
                    command=self.open_materials).pack(side="left")
         self.cert_lbl = tk.Label(mrow, text="", bg=CARD, fg=ACCENT, font=("Segoe UI", 8), cursor="hand2")
         self.cert_lbl.pack(side="right")
@@ -1402,33 +1429,22 @@ class App(tk.Tk):
         self.docs.insert("1.0", d.get("docs", ""))
         self._docs_auto = d.get("docs", "")
 
+    def step_act_number(self, step):
+        value = self.act_no.get().strip()
+        match = re.fullmatch(r"(\d+)(.*)", value)
+        if not value:
+            self.act_no.set("1")
+        elif match:
+            self.act_no.set(str(max(1, int(match[1]) + step)) + match[2])
+        else:
+            messagebox.showinfo("Номер акта", "Номер должен начинаться с числа.")
+
     def room_draw(self):
-        for w in self.chips.winfo_children():
-            w.destroy()
         room = self.cur_room
-        if not room:
-            self.room_info.configure(text="выберите помещение — покажу, какие акты сделаны и какие остались")
-            return
-        status = self.know.room_status(room)
-        done = sum(1 for _, acts in status if acts)
-        kind = self.know.room_kind(room)
-        floor = self.know.room_floor(room)
-        self.room_info.configure(text="  ·  ".join(x for x in (kind, f"{floor} этаж" if floor else "",
-                                                             f"этапов закрыто {done} из {len(status)}") if x))
-        cols = 4
-        for c in range(cols):
-            self.chips.columnconfigure(c, weight=1, uniform="chip")
-        for i, (st, acts) in enumerate(status):
-            if acts:
-                txt = "✓  " + st + "\n" + ", ".join("№ " + (a["act_no"] or "без номера") for a in acts[:4])
-                lb = tk.Label(self.chips, text=txt, bg=DONE_BG, fg=SAVED, justify="left", anchor="w",
-                              padx=8, pady=3, font=("Segoe UI", 8), cursor="hand2")
-                lb.bind("<Button-1>", lambda e: self.open_room_registry())
-            else:
-                lb = tk.Label(self.chips, text="○  " + st + "\nсоздать акт", bg=NEED_BG, fg=ACCENT_D,
-                              justify="left", anchor="w", padx=8, pady=3, font=("Segoe UI", 8), cursor="hand2")
-                lb.bind("<Button-1>", lambda e, s=st: self.room_stage(s))
-            lb.grid(row=i // cols, column=i % cols, sticky="nsew", padx=(0, 4), pady=(0, 4))
+        self.room_info.configure(text="  ·  ".join(x for x in (
+            self.know.room_kind(room),
+            f"{self.know.room_floor(room)} этаж" if self.know.room_floor(room) else "") if x)
+            if room else "Выберите помещение")
 
     def open_room_registry(self):
         RegistryDialog(self).q.set(self.cur_room)
@@ -1476,7 +1492,7 @@ class App(tk.Tk):
                        command=lambda i=i: self.rep_move(i, -1)).grid(row=i, column=2)
             ttk.Button(f, text="↓", width=2, style="Icon.TButton",
                        command=lambda i=i: self.rep_move(i, 1)).grid(row=i, column=3)
-            ttk.Button(f, text="✕", width=2, style="Icon.TButton",
+            ttk.Button(f, text="×", width=2, style="Icon.TButton",
                        command=lambda i=i: self.rep_del(i)).grid(row=i, column=4)
 
     def rep_pick(self, row):
@@ -1583,11 +1599,7 @@ class App(tk.Tk):
                 res = load_registry(reg) if reg else []
             except Exception:
                 pass
-            have = {str(Path(c["file"])).lower() for c in res}
-            if folder:
-                for c in scan_folder(folder):
-                    if str(Path(c["file"])).lower() not in have:   # в реестре нет — берём из папки
-                        res.append(c)
+            res = merge_certificates(res, scan_folder(folder) if folder else [], registry=reg)
             self.after(0, lambda: done(res))
 
         def done(res):
@@ -1602,25 +1614,15 @@ class App(tk.Tk):
 
         threading.Thread(target=work, daemon=True).start()
 
-    def cert_matches(self):
-        return match_materials(self.materials.get("1.0", "end"), self.certs) if self.certs else []
-
     def update_cert_status(self):
-        """Под материалами: сколько сертификатов нашлось; найденные сами отмечаются «для акта»."""
+        """Количество документов в подключённой базе сертификатов."""
         if not hasattr(self, "cert_lbl"):
             return
         if not self.certs:
             self.cert_lbl.configure(text="сертификаты: папка не подключена (База ▾)"
                                     if not self.settings.get("cert_dir") else "сертификаты: в папке нет файлов")
             return
-        m = self.cert_matches()
-        found = [c for _, c, _ in m if c]
-        for c in found:
-            if c["file"] not in self.act_certs_removed:
-                self.act_certs.add(c["file"])
-        self.cert_lbl.configure(text=f"сертификаты: найдено {len(found)} из {len(m)}  ·  для акта: "
-                                     f"{len(self.act_certs)}  ·  открыть ›" if m else
-                                     f"сертификаты: для акта {len(self.act_certs)}  ·  открыть ›")
+        self.cert_lbl.configure(text=f"сертификатов в базе: {len(self.certs)}  ·  открыть ›")
 
     @staticmethod
     def open_path(p):
@@ -1662,6 +1664,7 @@ class App(tk.Tk):
         cur["rooms"].update(normalize_project(proj)["rooms"])   # новые альбомы дополняют прежние
         save_json(PROJ_FILE, cur)
         self.know.project = cur
+        self.room_refresh()
         messagebox.showinfo("Проект", f'Загружено помещений: {len(proj["rooms"])}\n'
                                       f'Всего в проекте: {len(cur["rooms"])}')
 
@@ -1680,6 +1683,7 @@ class App(tk.Tk):
             self.config(cursor="")
         added = [r for r in recs if self.know.upsert(r)]
         self.save_know()
+        self.room_refresh()
         messagebox.showinfo("Импорт актов", f"Прочитано актов: {len(recs)}\nНовых в базе: {len(added)}\n"
                                             f"Остальные обновлены (даты, подписанты).")
 
@@ -1689,7 +1693,7 @@ class App(tk.Tk):
     def learn(self, d, path):
         """Сформированный акт — в реестр и в базу подсказок."""
         rec = {k: d[k] for k in ("act_no", "works", "docs", "next_works", "start", "end")}
-        rec.update(materials=d["materials_text"], file=str(path), source="сформирован", certs=d.get("certs", []),
+        rec.update(act_type=d.get("act_type", "АОСР"), materials=d["materials_text"], file=str(path), source="сформирован", certs=d.get("certs", []),
                    signers=[r["name"] for r in d["reps"] if r.get("on", True) and r.get("name")])
         self.know.upsert(rec)
         self.save_know()
@@ -1719,7 +1723,7 @@ class App(tk.Tk):
         g = lambda t: cap(t.get("1.0", "end"))
         return {"room": self.cur_room, "act_no": self.act_no.get().strip(), "works": g(self.works),
                 "loc": self.loc_var.get().strip(), "docs": g(self.docs),
-                "certs": sorted(self.act_certs),
+                "certs": [],
                 "materials_text": g(self.materials),
                 "start": self.start.get().strip(), "end": self.end.get().strip(),
                 "next_works": g(self.next_works),
@@ -1745,8 +1749,6 @@ class App(tk.Tk):
         if hasattr(self, "loc_var"):
             self.apply_work_fields(d)
         if hasattr(self, "cert_lbl"):
-            self.act_certs = set(d.get("certs", []))
-            self.act_certs_removed = set()
             self.update_cert_status()
 
     def open_project(self):
@@ -1761,8 +1763,9 @@ class App(tk.Tk):
             save_json(p, self.collect())
             self.flash_saved(f"✓  Проект сохранён: {Path(p).name}")
 
-    def make(self):
+    def make(self, act_type="АОСР"):
         d = self.collect()
+        d["act_type"] = act_type
         d["works"] = self.full_works()                 # в акт — с помещением
         if not d["works"]:
             messagebox.showwarning("Акт", "Заполните предъявленные работы.")
@@ -1801,12 +1804,6 @@ class App(tk.Tk):
             return False
         errors, warns = self.know.check_act(self.cur_room, d["works"], d["start"], d["end"],
                                             d["act_no"], d["docs"])
-        from learn import to_date
-        on = to_date(d["end"]) or to_date(d["start"])
-        for c in self.certs:
-            if c["file"] in self.act_certs and cert_expired(c, on):
-                warns.append(f'Срок документа истёк: {c.get("type") or "сертификат"} № {c["number"]} '
-                             f'(действителен до {c["valid"]}).')
         if errors:
             messagebox.showerror("Проверка акта", "Исправьте, чтобы сформировать акт:\n\n" +
                                  "\n".join("✕  " + e for e in errors) +

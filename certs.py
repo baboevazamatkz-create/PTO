@@ -155,12 +155,14 @@ def load_registry(xlsx):
             if not fcell or not (fcell.value or fcell.hyperlink):
                 continue
             target = unquote(fcell.hyperlink.target) if fcell.hyperlink and fcell.hyperlink.target else str(fcell.value)
+            target = target.replace("\\", "/")
             path = (base / target) if not Path(target).is_absolute() else Path(target)
             valid = get("valid")
             valid = valid.strftime("%d.%m.%Y") if hasattr(valid, "strftime") else str(valid or "")
             number = str(get("num") or "")
             out.append(make_entry(path, number, str(get("mat") or ""), str(get("type") or ""), valid,
                                   extra_numbers=numbers_in(Path(target).stem)))
+    wb.close()
     return out
 
 
@@ -218,3 +220,20 @@ def match_material(item, certs):
 def match_materials(materials_text, certs):
     """[(позиция материала, сертификат или None, как найден)] для текста «применены»."""
     return [(it, *match_material(it, certs)) for it in split_materials(materials_text or "")]
+
+
+def certificate_path_key(path):
+    return str(Path(str(path).replace("\\", "/")).resolve()).casefold()
+
+
+def merge_certificates(registry_rows, folder_rows, registry=None):
+    """Excel имеет приоритет; один физический файл отображается один раз."""
+    excluded = certificate_path_key(registry) if registry else None
+    seen, result = set(), []
+    for entry in [*registry_rows, *folder_rows]:
+        key = certificate_path_key(entry["file"])
+        if key == excluded or key in seen:
+            continue
+        seen.add(key)
+        result.append(entry)
+    return result
