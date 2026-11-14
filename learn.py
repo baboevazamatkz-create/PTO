@@ -340,16 +340,20 @@ class Knowledge:
         self.recs = []
         seen = set()
         for r in records:
-            key = (r.get("act_no"), r.get("works"))
+            key = (r.get("act_no"), r.get("works"), self.act_type(r))
             if key not in seen and r.get("works"):
                 seen.add(key)
                 self.recs.append(r)
 
+    @staticmethod
+    def act_type(rec):
+        return rec.get("act_type") or ("АППР" if "промежуточной приемки" in rec.get("file", "").lower() else "АОСР")
+
     def upsert(self, rec):
         """Добавить акт или обновить уже известный (тот же номер и работы). True — если новый."""
-        key = (rec.get("act_no"), rec.get("works"))
+        key = (rec.get("act_no"), rec.get("works"), self.act_type(rec))
         for i, r in enumerate(self.recs):
-            if (r.get("act_no"), r.get("works")) == key:
+            if (r.get("act_no"), r.get("works"), self.act_type(r)) == key:
                 merged = {**r, **{k: v for k, v in rec.items() if v}}
                 if r.get("source") == "сформирован":     # акт из программы остаётся «сформирован»
                     merged["source"] = "сформирован"
@@ -361,8 +365,8 @@ class Knowledge:
         return False
 
     def add(self, rec):
-        key = (rec.get("act_no"), rec.get("works"))
-        if rec.get("works") and all((r.get("act_no"), r.get("works")) != key for r in self.recs):
+        key = (rec.get("act_no"), rec.get("works"), self.act_type(rec))
+        if rec.get("works") and all((r.get("act_no"), r.get("works"), self.act_type(r)) != key for r in self.recs):
             self.recs.append(rec)
             return True
         return False
@@ -568,6 +572,8 @@ class Knowledge:
         folder = self.room_folder(room, base) if room else Path(base)
         rooms_txt = ", ".join(key_no(k) for k in keys)
         name = f'АСР №{rec["act_no"]}' + (f" п.{rooms_txt}" if rooms_txt else "") + " " + short_work(rec["works"])
+        if self.act_type(rec) == "АППР":
+            name = f'Акт№{rec["act_no"]} промежуточной приемки работ'
         return folder / (safe_name(name) + ".docx")
 
     def project_docs(self, room, work):

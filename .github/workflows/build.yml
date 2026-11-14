@@ -15,6 +15,7 @@ jobs:
         with: {name: akt-windows, path: dist}
       - run: Compress-Archive -Path dist\* -DestinationPath akt-windows.zip
       - uses: softprops/action-gh-release@v2
+        if: github.ref == 'refs/heads/main'
         with:
           tag_name: latest
           files: akt-windows.zip

@@ -172,6 +172,11 @@ def generate(data, out_path, template=None):
     # --- номер акта
     set_runs(P("АКТ"), [("АКТ № ", {"b": True}), (data["act_no"], {"b": True})])
 
+    if data.get("act_type") == "АППР":
+        for paragraph in doc.paragraphs:
+            if "освидетельствования скрытых работ" in paragraph.text.lower():
+                set_runs(paragraph, [("промежуточной приемки работ", {"b": True})])
+
     # --- объект и организация: подчёркивается только значение после двоеточия
     p = P("Объект:")
     label, _, value = p.text.partition(": ")
