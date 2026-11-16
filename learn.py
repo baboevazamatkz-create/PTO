@@ -338,12 +338,8 @@ class Knowledge:
     def __init__(self, records, project=None):
         self.project = normalize_project(project)
         self.recs = []
-        seen = set()
         for r in records:
-            key = (r.get("act_no"), r.get("works"), self.act_type(r))
-            if key not in seen and r.get("works"):
-                seen.add(key)
-                self.recs.append(r)
+            self.upsert(r)
 
     @staticmethod
     def act_type(rec):
@@ -353,7 +349,11 @@ class Knowledge:
         """Добавить акт или обновить уже известный (тот же номер и работы). True — если новый."""
         key = (rec.get("act_no"), rec.get("works"), self.act_type(rec))
         for i, r in enumerate(self.recs):
-            if (r.get("act_no"), r.get("works"), self.act_type(r)) == key:
+            same_file = (rec.get("file") and r.get("file") and
+                         str(Path(rec["file"].replace("\\", "/")).resolve()).casefold() ==
+                         str(Path(r["file"].replace("\\", "/")).resolve()).casefold() and
+                         self.act_type(r) == self.act_type(rec))
+            if same_file or (r.get("act_no"), r.get("works"), self.act_type(r)) == key:
                 merged = {**r, **{k: v for k, v in rec.items() if v}}
                 if r.get("source") == "сформирован":     # акт из программы остаётся «сформирован»
                     merged["source"] = "сформирован"

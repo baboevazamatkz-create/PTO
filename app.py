@@ -785,8 +785,7 @@ class CertsDialog(tk.Toplevel):
             self.tree.insert("", "end", iid=str(len(self.shown) - 1), tags=tags,
                              values=(c["number"], c.get("type", ""),
                                      c.get("material") or c["name"], c.get("valid", "")))
-        if self.app.certs:
-            self.count.configure(text=f"Сертификатов: {len(self.shown)}")
+        self.count.configure(text=f"Сертификатов: {len(self.shown)}")
 
         self.tree.apply_sort()
 
@@ -1197,7 +1196,10 @@ class App(tk.Tk):
         if not data["reps"]:
             data["reps"] = [{"on": True, "role": "", "org": "", "position": "", "name": ""}]
         self.chosen = set()
-        seed = load_json(base_dir() / "knowledge_seed.json", [])
+        self.settings = load_json(SETTINGS_FILE, {})
+        self._acts_generation = 0
+        self._certs_generation = 0
+        seed = [] if self.settings.get("acts_cleared") else load_json(base_dir() / "knowledge_seed.json", [])
         self.know = Knowledge(seed + load_json(KNOW_FILE, []), load_json(PROJ_FILE, {}))
         if data.get("materials_sel") and not data.get("materials_text"):
             data["materials_text"] = self.old_materials(data["materials_sel"])
@@ -1384,6 +1386,9 @@ class App(tk.Tk):
         self.room_cb.configure(values=list(labels.values()))
         if self.cur_room in labels:
             self.room_var.set(labels[self.cur_room])
+        else:
+            self.cur_room = ""
+            self.room_var.set("")
         base = self.settings.get("base_dir")
         if not base:
             self.base_info.configure(text="Папка базы актов не выбрана: «База ▾ → Папка базы актов…»")
@@ -1558,7 +1563,55 @@ class App(tk.Tk):
         m.add_separator()
         m.add_command(label="Импорт актов из другой папки…", command=self.import_acts)
         m.add_command(label="Импорт проекта (файл .json)…", command=self.import_project)
+        m.add_separator()
+        for scope, label in (("acts", "Очистить реестр актов…"),
+                             ("certs", "Очистить реестр сертификатов…"),
+                             ("all", "Очистить обе базы…")):
+            m.add_command(label=label, command=lambda scope=scope: self.clear_database(scope))
         m.tk_popup(self.winfo_pointerx(), self.winfo_pointery())
+
+    def clear_database(self, scope):
+        titles = {"acts": "реестр актов", "certs": "реестр сертификатов", "all": "обе базы"}
+        title = titles[scope]
+        if not messagebox.askyesno("Очистка базы", f"Очистить {title}?\n\n"
+                "Записи будут удалены из программы, источники импорта отключены.\n"
+                "Файлы Word, PDF и Excel на диске останутся.\n"
+                "Затем можно заново подключить папки через меню «База».", parent=self):
+            return
+        acts, certs = scope in ("acts", "all"), scope in ("certs", "all")
+        settings = dict(self.settings)
+        if acts:
+            settings.pop("base_dir", None)
+            settings["acts_cleared"] = True
+        if certs:
+            settings.pop("cert_dir", None)
+            settings.pop("cert_registry", None)
+        try:
+            # Сначала отключаем источники, чтобы перезапуск не вернул записи.
+            save_json(SETTINGS_FILE, settings)
+            if acts:
+                save_json(KNOW_FILE, [])
+            if certs:
+                save_json(CERT_FILE, [])
+        except OSError as error:
+            messagebox.showerror("Очистка базы", f"Не удалось сохранить очистку: {error}", parent=self)
+            return
+        self.settings.clear()
+        self.settings.update(settings)
+        if acts:
+            self._acts_generation += 1
+            self.know.recs.clear()
+            self.room_refresh()
+        if certs:
+            self._certs_generation += 1
+            self.certs.clear()
+            self.update_cert_status()
+        for window in self.winfo_children():
+            if isinstance(window, (RegistryDialog, CertsDialog)):
+                window.refresh()
+            elif isinstance(window, SummaryDialog) and acts:
+                window.destroy()
+        self.flash_saved(f"Очищен {title}. Файлы сохранены.")
 
     # ---------- база актов в папке
     def choose_base(self):
@@ -1593,6 +1646,9 @@ class App(tk.Tk):
         if not folder and not reg:
             return
 
+        self._certs_generation += 1
+        generation = self._certs_generation
+
         def work():
             res = []
             try:
@@ -1603,6 +1659,8 @@ class App(tk.Tk):
             self.after(0, lambda: done(res))
 
         def done(res):
+            if generation != self._certs_generation:
+                return
             self.certs = res
             save_json(CERT_FILE, res)
             self.update_cert_status()
@@ -1634,6 +1692,8 @@ class App(tk.Tk):
         base = self.settings.get("base_dir")
         if not base or not Path(base).exists():
             return
+        self._acts_generation += 1
+        generation = self._acts_generation
         self.base_info.configure(text="База: читаю папку…")
 
         def work():
@@ -1641,6 +1701,8 @@ class App(tk.Tk):
             self.after(0, lambda: done(recs))
 
         def done(recs):
+            if generation != self._acts_generation:
+                return
             for r in recs:
                 r["source"] = "папка базы"
             new = [r for r in recs if self.know.upsert(r)]
