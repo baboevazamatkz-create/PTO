@@ -347,7 +347,7 @@ class Knowledge:
 
     @staticmethod
     def act_type(rec):
-        return rec.get("act_type") or ("АППР" if "промежуточной приемки" in rec.get("file", "").lower() else "АОСР")
+        return rec.get("act_type") or ("АППР" if ("промежуточной приемки" in rec.get("file", "").lower() or Path(rec.get("file", "")).name.upper().startswith("АППР")) else "АОСР")
 
     def upsert(self, rec):
         """Добавить акт или обновить уже известный (тот же номер и работы). True — если новый."""
@@ -573,7 +573,7 @@ class Knowledge:
         rooms_txt = ", ".join(key_no(k) for k in keys)
         name = f'АСР №{rec["act_no"]}' + (f" п.{rooms_txt}" if rooms_txt else "") + " " + short_work(rec["works"])
         if self.act_type(rec) == "АППР":
-            name = f'Акт№{rec["act_no"]} промежуточной приемки работ'
+            name = f'АППР №{rec["act_no"]}' + (f" п.{rooms_txt}" if rooms_txt else "") + " " + short_work(rec["works"])
         return folder / (safe_name(name) + ".docx")
 
     def project_docs(self, room, work):

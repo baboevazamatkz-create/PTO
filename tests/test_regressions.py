@@ -50,7 +50,8 @@ class Regressions(unittest.TestCase):
                 self.assertIn('промежуточной приемки работ' if kind == 'АППР'
                               else 'освидетельствования скрытых работ', text)
                 if kind == 'АППР':
-                    self.assertEqual(path.name, 'Акт№12 промежуточной приемки работ.docx')
+                    self.assertTrue(path.name.startswith('АППР №12 п.38'))
+                    self.assertIn('стяжки', path.name)
                 record = parse_act(path)
                 self.assertIsNotNone(record)
                 self.assertEqual(record['act_no'], '12')
